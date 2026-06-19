@@ -1,0 +1,47 @@
+[package]
+name = "lore-desktop"
+version = "0.1.0"
+description = "High-performance multiplatform desktop client for Lore VCS"
+authors = ["lore-desktop contributors"]
+edition = "2021"
+rust-version = "1.77"
+
+# The lib is what Tauri's mobile/desktop entrypoints call into. `cdylib` is
+# required for mobile targets; `staticlib`/`rlib` keep desktop linking happy.
+[lib]
+name = "lore_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Async runtime for the daemon controller / streaming (Phases 2 & 4).
+tokio = { version = "1", features = ["full"] }
+# Structured logging.
+log = "0.4"
+# Async methods on the LoreClient trait.
+async-trait = "0.1"
+# Parsing the RFC-2822 timestamps in `lore lock status` output -> ISO-8601.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[features]
+# When enabled (Phase 2), the backend binds to liblore instead of returning
+# the static mock data. Default build stays on mocks so the frontend can be
+# developed in isolation.
+liblore = []
+
+# Aggressive local builds on the M3 Max: thin LTO + all codegen units in dev for
+# fast incremental compiles, full optimization for release artifacts.
+[profile.dev]
+opt-level = 1
+incremental = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
