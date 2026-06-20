@@ -1,0 +1,28 @@
+#!/bin/sh
+# Pre-commit gate: enforces the test-before-commit workflow (see CLAUDE.md).
+# Runs only the checks relevant to what's staged, then aborts the commit on
+# any failure. Bypass in a genuine emergency with: git commit --no-verify
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+export PATH="$HOME/.cargo/bin:$PATH"
+export _ZO_DOCTOR=0
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail() { echo "pre-commit: $1 FAILED — commit aborted (fix, or use --no-verify)"; exit 1; }
+
+# Frontend: type-check when any frontend source / build config is staged.
+if echo "$staged" | grep -qE '^(src/|index\.html$|package\.json$|package-lock\.json$|tsconfig.*\.json$|vite\.config\.ts$)'; then
+  echo "pre-commit: running frontend typecheck…"
+  npm run --silent typecheck || fail "typecheck"
+fi
+
+# Backend: compile + unit tests when any Rust source / manifest is staged.
+if echo "$staged" | grep -qE '^src-tauri/.*\.rs$|^src-tauri/Cargo\.(toml|lock)$'; then
+  echo "pre-commit: running backend tests (cargo test --lib)…"
+  ( cd src-tauri && cargo test --lib --quiet ) || fail "cargo test"
+fi
+
+echo "pre-commit: checks passed."
