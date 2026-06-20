@@ -27,6 +27,8 @@ log = "0.4"
 async-trait = "0.1"
 # Parsing the RFC-2822 timestamps in `lore lock status` output -> ISO-8601.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Lore's content hash, used by the streaming ingest to compute fragment addresses.
+blake3 = "1"
 
 [features]
 # When enabled (Phase 2), the backend binds to liblore instead of returning

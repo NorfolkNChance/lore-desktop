@@ -12,6 +12,8 @@ import {
   LORE_EVENT_CHANNEL,
   type Branch,
   type ClientMode,
+  type DiffTool,
+  type IngestSummary,
   type Lock,
   type LockState,
   type LoreEvent,
@@ -79,6 +81,29 @@ export const unstageFiles = (paths: string[]): Promise<void> =>
 
 export const commit = (message: string): Promise<string> =>
   invoke("commit", { message });
+
+// ---------------------------------------------------------------------------
+// Phase 4: streaming ingest + visual diff-tool hooks
+// ---------------------------------------------------------------------------
+
+/** Stream a file into fragments (bounded memory). Progress arrives via events. */
+export const streamIngestFile = (path: string): Promise<IngestSummary> =>
+  invoke("stream_ingest_file", { path });
+
+export const listDiffTools = (): Promise<DiffTool[]> => invoke("list_diff_tools");
+
+/** Launch a native diff tool on two arbitrary paths (the integration hook). */
+export const launchDiffTool = (
+  left: string,
+  right: string,
+  toolId?: string,
+): Promise<DiffTool> => invoke("launch_diff_tool", { left, right, toolId });
+
+/** Diff a repository asset's working copy vs. its committed base natively. */
+export const launchAssetDiff = (
+  path: string,
+  toolId?: string,
+): Promise<DiffTool> => invoke("launch_asset_diff", { path, toolId });
 
 // ---------------------------------------------------------------------------
 // Daemon event stream

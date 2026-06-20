@@ -118,6 +118,9 @@ function LockPanel({ entry }: { entry: FileEntry }) {
 }
 
 function BinaryBody({ entry }: { entry: FileEntry }) {
+  const { diffTools, openAssetDiff, ingestAsset } = useLoreStore();
+  const available = diffTools.filter((t) => t.available);
+
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-line p-8 text-center">
       <div className="text-4xl text-faint" aria-hidden>
@@ -126,19 +129,44 @@ function BinaryBody({ entry }: { entry: FileEntry }) {
       <div className="text-[13px] font-medium">Binary asset — no text diff</div>
       <p className="max-w-sm text-[12px] text-muted">
         Lore stores this as deduplicated, content-addressed fragments. Compare
-        revisions with a native visual diff tool for this asset type.
+        revisions with a native visual diff tool, or stream it into fragments.
       </p>
-      <button
-        onClick={() =>
-          alert(
-            "Phase 4: launches the configured external visual diff tool for " +
-              entry.assetKind,
-          )
-        }
-        className="mt-1 rounded-md border border-line bg-canvas px-3 py-1.5 text-[12px] font-medium hover:bg-subtle"
-      >
-        ⇄ Open in visual diff tool
-      </button>
+
+      <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+        <button
+          onClick={() => openAssetDiff(entry.path)}
+          disabled={available.length === 0}
+          className="rounded-md border border-line bg-canvas px-3 py-1.5 text-[12px] font-medium hover:bg-subtle disabled:opacity-50"
+        >
+          ⇄ Open in visual diff tool
+        </button>
+        <button
+          onClick={() => ingestAsset(entry.path)}
+          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-95"
+        >
+          ⤓ Stream into fragments
+        </button>
+      </div>
+
+      {available.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-muted">
+          <span>diff via:</span>
+          {available.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => openAssetDiff(entry.path, t.id)}
+              title={t.path}
+              className="rounded bg-inset px-1.5 py-0.5 hover:bg-line-muted"
+            >
+              {t.name}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="text-[11px] text-faint">
+          No diff tool detected (FileMerge / P4Merge / Beyond Compare / VS Code)
+        </div>
+      )}
     </div>
   );
 }

@@ -6,11 +6,13 @@
 
 mod commands;
 mod daemon;
+mod diff_tools;
 mod lock_manager;
 mod lore;
 mod mock;
 mod models;
 mod state;
+mod streaming;
 
 use daemon::DaemonController;
 use lore::LoreConfig;
@@ -49,6 +51,10 @@ pub fn run() {
             commands::stage_files,
             commands::unstage_files,
             commands::commit,
+            commands::stream_ingest_file,
+            commands::list_diff_tools,
+            commands::launch_diff_tool,
+            commands::launch_asset_diff,
         ])
         .setup(|app| {
             // Auto-start the daemon only when explicitly requested. `lore

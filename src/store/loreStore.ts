@@ -10,9 +10,12 @@ import { create } from "zustand";
 import * as lore from "@/api/lore";
 import type {
   ClientMode,
+  DiffTool,
+  IngestSummary,
   LoreEvent,
   Revision,
   ServiceState,
+  TransferProgress,
   Workspace,
   WorkspaceStatus,
 } from "@/types/lore";
@@ -37,6 +40,11 @@ interface LoreState {
   selectedPath: string | null;
   committing: boolean;
 
+  // Phase 4: streaming + diff tools
+  transfer: TransferProgress | null;
+  ingestSummary: IngestSummary | null;
+  diffTools: DiffTool[];
+
   // actions
   bootstrap: () => Promise<void>;
   refreshStatus: () => Promise<void>;
@@ -49,7 +57,10 @@ interface LoreState {
   commit: (message: string) => Promise<boolean>;
   startService: () => Promise<void>;
   stopService: () => Promise<void>;
+  ingestAsset: (path: string) => Promise<void>;
+  openAssetDiff: (path: string, toolId?: string) => Promise<void>;
   dismissError: () => void;
+  clearIngest: () => void;
   subscribeToEvents: () => Promise<UnlistenFn>;
 }
 
@@ -69,6 +80,10 @@ export const useLoreStore = create<LoreState>((set, get) => ({
   selectedPath: null,
   committing: false,
 
+  transfer: null,
+  ingestSummary: null,
+  diffTools: [],
+
   bootstrap: async () => {
     set({ loading: true, error: null });
     try {
@@ -86,6 +101,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;
       set({ status, selectedPath });
       await get().refreshHistory();
+      lore.listDiffTools().then((diffTools) => set({ diffTools })).catch(() => {});
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -183,7 +199,30 @@ export const useLoreStore = create<LoreState>((set, get) => ({
     }
   },
 
+  ingestAsset: async (path) => {
+    set({ ingestSummary: null, transfer: null, error: null });
+    try {
+      // Absolute path on disk = repository root + repo-relative path.
+      const ws = get().workspaces[0];
+      const abs = ws?.path ? `${ws.path}/${path}` : path;
+      const summary = await lore.streamIngestFile(abs);
+      set({ ingestSummary: summary, transfer: null });
+    } catch (e) {
+      set({ error: String(e), transfer: null });
+    }
+  },
+
+  openAssetDiff: async (path, toolId) => {
+    try {
+      await lore.launchAssetDiff(path, toolId);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   dismissError: () => set({ error: null }),
+
+  clearIngest: () => set({ ingestSummary: null, transfer: null }),
 
   subscribeToEvents: () =>
     lore.onLoreEvent((event) => {
@@ -201,6 +240,11 @@ export const useLoreStore = create<LoreState>((set, get) => ({
           if (event.payload && typeof event.payload === "object") {
             const state = (event.payload as { state?: ServiceState }).state;
             if (state) set({ serviceState: state });
+          }
+          break;
+        case "transferProgress":
+          if (event.payload && typeof event.payload === "object") {
+            set({ transfer: event.payload as TransferProgress });
           }
           break;
         default:

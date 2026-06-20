@@ -271,5 +271,27 @@ export interface LoreEvent {
 /** Which backend is serving data. Mirrors Rust `ClientMode`. */
 export type ClientMode = "cli" | "mock";
 
+/** Result of a streaming ingest (Phase 4). Mirrors Rust `IngestSummary`. */
+export interface IngestSummary {
+  operationId: string;
+  path: string;
+  totalBytes: number;
+  fragmentCount: number;
+  /** BLAKE3 over the fragment hashes — the asset's content address. */
+  rootHash: string;
+  chunkSize: number;
+  elapsedMs: number;
+  /** Peak resident buffer — bounded regardless of file size. */
+  peakBufferBytes: number;
+}
+
+/** A detected native visual diff tool (Phase 4). Mirrors Rust `DiffToolInfo`. */
+export interface DiffTool {
+  id: string;
+  name: string;
+  available: boolean;
+  path?: string;
+}
+
 /** The Tauri event channel name daemon events are emitted on. */
 export const LORE_EVENT_CHANNEL = "lore://event" as const;
