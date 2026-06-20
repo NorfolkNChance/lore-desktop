@@ -258,6 +258,31 @@ impl LoreClient for CliLoreClient {
         self.run(&["lock", "release", path]).await?;
         Ok(())
     }
+
+    async fn stage(&self, paths: &[String]) -> LoreResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["stage"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        self.run(&args).await?;
+        Ok(())
+    }
+
+    async fn unstage(&self, paths: &[String]) -> LoreResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["unstage"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        self.run(&args).await?;
+        Ok(())
+    }
+
+    async fn commit(&self, message: &str) -> LoreResult<String> {
+        let out = self.run(&["commit", message]).await?;
+        Ok(out.trim().to_string())
+    }
 }
 
 /// Best-effort file size from the working tree.

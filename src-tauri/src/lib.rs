@@ -46,6 +46,9 @@ pub fn run() {
             commands::acquire_lock,
             commands::release_lock,
             commands::lock_status,
+            commands::stage_files,
+            commands::unstage_files,
+            commands::commit,
         ])
         .setup(|app| {
             // Auto-start the daemon only when explicitly requested. `lore

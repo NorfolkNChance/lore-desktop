@@ -68,6 +68,19 @@ export const lockStatus = (path: string): Promise<LockState> =>
   invoke("lock_status", { path });
 
 // ---------------------------------------------------------------------------
+// Staging & commit (mirror `lore stage | unstage | commit`)
+// ---------------------------------------------------------------------------
+
+export const stageFiles = (paths: string[]): Promise<void> =>
+  invoke("stage_files", { paths });
+
+export const unstageFiles = (paths: string[]): Promise<void> =>
+  invoke("unstage_files", { paths });
+
+export const commit = (message: string): Promise<string> =>
+  invoke("commit", { message });
+
+// ---------------------------------------------------------------------------
 // Daemon event stream
 // ---------------------------------------------------------------------------
 

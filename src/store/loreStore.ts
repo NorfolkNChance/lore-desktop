@@ -1,10 +1,9 @@
 /**
  * Zustand store fed by async IPC + daemon events.
  *
- * Holds the active workspace, its status, and live service state. The
- * `subscribeToEvents` action wires the daemon event channel so the UI reacts
- * instantly to lock/status changes pushed from the backend — exactly the
- * event-driven path Phase 3 builds on.
+ * Holds the active workspace, working-tree status, history, UI selection, and
+ * live service state. `subscribeToEvents` wires the daemon event channel so the
+ * UI reacts instantly to lock/status/commit changes pushed from the backend.
  */
 
 import { create } from "zustand";
@@ -12,16 +11,20 @@ import * as lore from "@/api/lore";
 import type {
   ClientMode,
   LoreEvent,
+  Revision,
   ServiceState,
   Workspace,
   WorkspaceStatus,
 } from "@/types/lore";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
+export type SidebarTab = "changes" | "history";
+
 interface LoreState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   status: WorkspaceStatus | null;
+  revisions: Revision[];
   serviceState: ServiceState;
   backendMode: ClientMode;
   loreVersion: string | null;
@@ -29,11 +32,24 @@ interface LoreState {
   error: string | null;
   lastEvent: LoreEvent | null;
 
+  // UI state
+  activeTab: SidebarTab;
+  selectedPath: string | null;
+  committing: boolean;
+
   // actions
   bootstrap: () => Promise<void>;
   refreshStatus: () => Promise<void>;
+  refreshHistory: () => Promise<void>;
+  setTab: (tab: SidebarTab) => void;
+  selectFile: (path: string | null) => void;
   acquireLock: (path: string, reason?: string) => Promise<void>;
   releaseLock: (path: string) => Promise<void>;
+  setStaged: (path: string, staged: boolean) => Promise<void>;
+  commit: (message: string) => Promise<boolean>;
+  startService: () => Promise<void>;
+  stopService: () => Promise<void>;
+  dismissError: () => void;
   subscribeToEvents: () => Promise<UnlistenFn>;
 }
 
@@ -41,12 +57,17 @@ export const useLoreStore = create<LoreState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
   status: null,
+  revisions: [],
   serviceState: "stopped",
   backendMode: "mock",
   loreVersion: null,
   loading: false,
   error: null,
   lastEvent: null,
+
+  activeTab: "changes",
+  selectedPath: null,
+  committing: false,
 
   bootstrap: async () => {
     set({ loading: true, error: null });
@@ -61,7 +82,10 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       const activeWorkspaceId = workspaces[0]?.id ?? null;
       set({ workspaces, activeWorkspaceId, serviceState, backendMode, loreVersion });
       const status = await lore.getWorkspaceStatus();
-      set({ status });
+      // Auto-select the first changed file so the detail pane isn't empty.
+      const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;
+      set({ status, selectedPath });
+      await get().refreshHistory();
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -72,16 +96,35 @@ export const useLoreStore = create<LoreState>((set, get) => ({
   refreshStatus: async () => {
     try {
       const status = await lore.getWorkspaceStatus();
-      set({ status });
+      // Keep selection valid; fall back to the first entry.
+      const cur = get().selectedPath;
+      const stillThere = status.entries.some((e) => e.path === cur);
+      set({
+        status,
+        selectedPath: stillThere ? cur : status.entries[0]?.path ?? null,
+      });
     } catch (e) {
       set({ error: String(e) });
     }
   },
 
+  refreshHistory: async () => {
+    try {
+      const revisions = await lore.listRevisions(50);
+      set({ revisions });
+    } catch (e) {
+      // History is non-critical; don't surface as a blocking error.
+      console.warn("history load failed", e);
+    }
+  },
+
+  setTab: (tab) => set({ activeTab: tab }),
+
+  selectFile: (path) => set({ selectedPath: path }),
+
   acquireLock: async (path, reason) => {
     try {
       await lore.acquireLock(path, reason);
-      // Event channel will trigger refresh, but refresh now for snappiness.
       await get().refreshStatus();
     } catch (e) {
       set({ error: String(e) });
@@ -97,14 +140,62 @@ export const useLoreStore = create<LoreState>((set, get) => ({
     }
   },
 
+  setStaged: async (path, staged) => {
+    try {
+      if (staged) await lore.stageFiles([path]);
+      else await lore.unstageFiles([path]);
+      await get().refreshStatus();
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  commit: async (message) => {
+    set({ committing: true, error: null });
+    try {
+      await lore.commit(message);
+      await get().refreshStatus();
+      await get().refreshHistory();
+      return true;
+    } catch (e) {
+      set({ error: String(e) });
+      return false;
+    } finally {
+      set({ committing: false });
+    }
+  },
+
+  startService: async () => {
+    try {
+      await lore.startService();
+      set({ serviceState: await lore.serviceState() });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  stopService: async () => {
+    try {
+      await lore.stopService();
+      set({ serviceState: await lore.serviceState() });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  dismissError: () => set({ error: null }),
+
   subscribeToEvents: () =>
     lore.onLoreEvent((event) => {
       set({ lastEvent: event });
       switch (event.tag) {
         case "lockChanged":
         case "statusChanged":
+          void get().refreshStatus();
+          break;
         case "revisionCommitted":
           void get().refreshStatus();
+          void get().refreshHistory();
           break;
         case "serviceStateChanged":
           if (event.payload && typeof event.payload === "object") {

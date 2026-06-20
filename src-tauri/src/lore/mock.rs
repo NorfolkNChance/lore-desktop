@@ -5,21 +5,32 @@
 use super::{ClientMode, LoreClient, LoreError, LoreResult};
 use crate::models::*;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 pub struct MockLoreClient {
     /// path -> current lock disposition. Seeded from the demo fixtures.
     locks: Mutex<HashMap<String, LockState>>,
+    /// Paths with staging intent.
+    staged: Mutex<HashSet<String>>,
+    /// Paths committed this session (filtered out of the changes list).
+    committed: Mutex<HashSet<String>>,
 }
 
 impl MockLoreClient {
     pub fn new() -> Self {
-        let seed = crate::mock::file_entries()
-            .into_iter()
-            .map(|e| (e.path, e.lock_state))
+        let entries = crate::mock::file_entries();
+        let locks = entries.iter().map(|e| (e.path.clone(), e.lock_state)).collect();
+        let staged = entries
+            .iter()
+            .filter(|e| e.staged)
+            .map(|e| e.path.clone())
             .collect();
-        Self { locks: Mutex::new(seed) }
+        Self {
+            locks: Mutex::new(locks),
+            staged: Mutex::new(staged),
+            committed: Mutex::new(HashSet::new()),
+        }
     }
 
     fn me() -> Author {
@@ -73,11 +84,16 @@ impl LoreClient for MockLoreClient {
 
     async fn status(&self) -> LoreResult<WorkspaceStatus> {
         let locks = self.locks.lock().unwrap();
+        let staged = self.staged.lock().unwrap();
+        let committed = self.committed.lock().unwrap();
         let mut status = crate::mock::workspace_status();
+        // Drop committed paths from the working-tree changes.
+        status.entries.retain(|e| !committed.contains(&e.path));
         for entry in &mut status.entries {
             let state = locks.get(&entry.path).copied().unwrap_or(LockState::Unlocked);
             entry.lock_state = state;
             entry.lock = Self::lock_for(&entry.path, state);
+            entry.staged = staged.contains(&entry.path);
         }
         status.counts = StatusCounts {
             staged: status.entries.iter().filter(|e| e.staged).count() as u32,
@@ -128,5 +144,34 @@ impl LoreClient for MockLoreClient {
         let mut locks = self.locks.lock().unwrap();
         locks.insert(path.to_string(), LockState::Unlocked);
         Ok(())
+    }
+
+    async fn stage(&self, paths: &[String]) -> LoreResult<()> {
+        let mut staged = self.staged.lock().unwrap();
+        for p in paths {
+            staged.insert(p.clone());
+        }
+        Ok(())
+    }
+
+    async fn unstage(&self, paths: &[String]) -> LoreResult<()> {
+        let mut staged = self.staged.lock().unwrap();
+        for p in paths {
+            staged.remove(p);
+        }
+        Ok(())
+    }
+
+    async fn commit(&self, message: &str) -> LoreResult<String> {
+        let mut staged = self.staged.lock().unwrap();
+        if staged.is_empty() {
+            return Err(LoreError::Cli("nothing staged to commit".into()));
+        }
+        let mut committed = self.committed.lock().unwrap();
+        let n = staged.len();
+        for p in staged.drain() {
+            committed.insert(p);
+        }
+        Ok(format!("committed {n} file(s): {message}"))
     }
 }

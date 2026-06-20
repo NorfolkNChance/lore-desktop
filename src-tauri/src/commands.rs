@@ -9,7 +9,9 @@ use crate::daemon::DaemonController;
 use crate::lore::ClientMode;
 use crate::models::*;
 use crate::state::AppState;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+
+const LORE_EVENT_CHANNEL: &str = "lore://event";
 
 // ---------------------------------------------------------------------------
 // Backend / service introspection
@@ -157,4 +159,55 @@ pub async fn lock_status(
     path: String,
 ) -> Result<LockState, String> {
     state.locks.status(&path).await
+}
+
+// ---------------------------------------------------------------------------
+// Staging & commit
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn stage_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    state.client.stage(&paths).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "staged": paths }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unstage_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    state.client.unstage(&paths).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "unstaged": paths }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn commit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    message: String,
+) -> Result<String, String> {
+    let result = state.client.commit(&message).await.map_err(|e| e.to_string())?;
+    emit(
+        &app,
+        LoreEventTag::RevisionCommitted,
+        serde_json::json!({ "message": message }),
+    );
+    Ok(result)
+}
+
+fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
+    let event = LoreEvent {
+        tag,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        level: LoreLogLevel::Info,
+        payload: Some(payload),
+    };
+    let _ = app.emit(LORE_EVENT_CHANNEL, event);
 }

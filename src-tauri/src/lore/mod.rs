@@ -91,6 +91,16 @@ pub trait LoreClient: Send + Sync {
 
     /// Release a lock (`lore lock release <path>`).
     async fn release_lock(&self, path: &str) -> LoreResult<()>;
+
+    /// Stage files for the next commit (`lore stage <paths>`).
+    async fn stage(&self, paths: &[String]) -> LoreResult<()>;
+
+    /// Unstage files (`lore unstage <paths>`).
+    async fn unstage(&self, paths: &[String]) -> LoreResult<()>;
+
+    /// Commit the staged revision (`lore commit <message>`). Returns the CLI's
+    /// confirmation text.
+    async fn commit(&self, message: &str) -> LoreResult<String>;
 }
 
 /// Resolved configuration for talking to Lore.
