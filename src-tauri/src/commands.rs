@@ -211,3 +211,74 @@ fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
     };
     let _ = app.emit(LORE_EVENT_CHANNEL, event);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: memory-efficient streaming ingest
+// ---------------------------------------------------------------------------
+
+/// Stream a (potentially multi-GB) file into content-addressed fragments,
+/// emitting `transferProgress` events. Runs on the async runtime, so the UI
+/// thread is never blocked; resident memory is bounded to one chunk.
+#[tauri::command]
+pub async fn stream_ingest_file(
+    app: AppHandle,
+    path: String,
+) -> Result<crate::streaming::IngestSummary, String> {
+    let op_id = format!("ingest-{}", chrono::Utc::now().timestamp_millis());
+    crate::streaming::stream_ingest(app, path, op_id).await
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: visual diff-tool integration hooks
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_diff_tools() -> Vec<crate::diff_tools::DiffToolInfo> {
+    crate::diff_tools::list()
+}
+
+/// Launch a native diff tool on two arbitrary file paths (the integration hook).
+#[tauri::command]
+pub fn launch_diff_tool(
+    left: String,
+    right: String,
+    tool_id: Option<String>,
+) -> Result<crate::diff_tools::DiffToolInfo, String> {
+    crate::diff_tools::launch(tool_id.as_deref(), &left, &right)
+}
+
+/// Convenience: diff a repository asset's working copy against its committed
+/// base in a native tool. Base export for binary assets is the documented
+/// integration point — 0.8.3's CLI has no binary revision export, so until that
+/// lands we snapshot the working copy as the base so the tool still opens with
+/// the asset. The hook (resolving versions + launching the native tool) is what
+/// this demonstrates.
+#[tauri::command]
+pub fn launch_asset_diff(
+    state: State<'_, AppState>,
+    path: String,
+    tool_id: Option<String>,
+) -> Result<crate::diff_tools::DiffToolInfo, String> {
+    let repo = state
+        .repository
+        .as_ref()
+        .ok_or_else(|| "no repository on disk (mock backend) — use the diff hook directly".to_string())?;
+    let working = repo.join(&path);
+    if !working.exists() {
+        return Err(format!("asset not found on disk: {}", working.display()));
+    }
+    // Snapshot the committed base to a temp file (placeholder until binary
+    // revision export is available).
+    let base = std::env::temp_dir().join(format!(
+        "lore-base-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        working.file_name().and_then(|n| n.to_str()).unwrap_or("asset")
+    ));
+    std::fs::copy(&working, &base).map_err(|e| format!("snapshot base: {e}"))?;
+
+    crate::diff_tools::launch(
+        tool_id.as_deref(),
+        &base.display().to_string(),
+        &working.display().to_string(),
+    )
+}

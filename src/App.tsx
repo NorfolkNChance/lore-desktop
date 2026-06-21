@@ -5,6 +5,7 @@ import { ChangesList } from "@/components/ChangesList";
 import { HistoryList } from "@/components/HistoryList";
 import { CommitBox } from "@/components/CommitBox";
 import { DetailPane } from "@/components/DetailPane";
+import { TransferOverlay } from "@/components/TransferOverlay";
 
 /**
  * GitHub Desktop-style shell: top toolbar, a left sidebar (Changes / History +
@@ -82,6 +83,8 @@ export default function App() {
           <DetailPane />
         </main>
       </div>
+
+      <TransferOverlay />
 
       <footer className="flex items-center justify-between border-t border-line bg-subtle px-4 py-1 text-[11px] text-muted">
         <span>
