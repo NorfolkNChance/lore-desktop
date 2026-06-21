@@ -76,3 +76,15 @@ git config core.hooksPath .githooks
 - CLI-output parsers in `src-tauri/src/lore/parse.rs` are unit-tested against real `lore`
   output; update the tests with captured output, never guessed formats.
 - Keep `src/types/lore.ts` and `src-tauri/src/models.rs` in sync when changing contracts.
+
+## Known advisories (accepted, upstream-blocked)
+
+- **`glib` < 0.20 — RUSTSEC / GHSA-wrw7-89jp-8q8g** (medium, Dependabot alert #5):
+  unsoundness in `glib::VariantStrIter` iterator impls. **No fix available to us yet.**
+  `glib 0.18` is pinned transitively by `gtk 0.18` ← `webkit2gtk`/`wry` ← `tauri 2.11.3`
+  (the latest release); `cargo update --precise 0.20.0` fails the `gtk = "^0.18"` constraint,
+  and a `[patch]` to 0.20 breaks compilation (0.18→0.20 is a breaking API change).
+  Linux-only (macOS/Windows don't compile `glib`); our code never calls `glib` directly.
+  **Resolution path:** will clear automatically once Tauri/wry move their GTK backend to
+  gtk-rs 0.20+ — re-check after any Tauri bump with
+  `cargo update -p glib --precise 0.20.0` (success = fix is available; then bump for real).
