@@ -13,6 +13,7 @@ import {
   type Branch,
   type ClientMode,
   type DiffTool,
+  type Identity,
   type IngestSummary,
   type Lock,
   type LockState,
@@ -46,6 +47,25 @@ export const listBranches = (): Promise<Branch[]> => invoke("list_branches");
 
 export const listRevisions = (limit?: number): Promise<Revision[]> =>
   invoke("list_revisions", { limit });
+
+export const currentIdentity = (): Promise<Identity> =>
+  invoke("current_identity");
+
+// ---------------------------------------------------------------------------
+// VCS workflow (branches, sync, push)
+// ---------------------------------------------------------------------------
+
+export const switchBranch = (name: string): Promise<void> =>
+  invoke("switch_branch", { name });
+
+export const createBranch = (name: string): Promise<void> =>
+  invoke("create_branch", { name });
+
+export const syncRepository = (revision?: string): Promise<void> =>
+  invoke("sync_repository", { revision });
+
+export const pushRepository = (branch?: string): Promise<void> =>
+  invoke("push_repository", { branch });
 
 export const listLocks = (): Promise<Lock[]> => invoke("list_locks");
 

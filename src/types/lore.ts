@@ -143,7 +143,20 @@ export interface Workspace {
  * Lock disposition from the perspective of the current instance — the single
  * most important signal in a binary-first UI.
  */
-export type LockState = "unlocked" | "lockedByMe" | "lockedByOther" | "stale";
+export type LockState =
+  | "unlocked"
+  | "lockedByMe"
+  | "lockedByOther"
+  | "stale"
+  /** Server unreachable / query timed out — distinct from "unlocked". */
+  | "unknown";
+
+/** The authenticated user (for me-vs-others lock attribution). */
+export interface Identity {
+  userId: string;
+  name: string;
+  authenticated: boolean;
+}
 
 /** A lock held on an unmergeable (typically binary) file. */
 export interface Lock {
@@ -220,6 +233,8 @@ export interface WorkspaceStatus {
     lockedByMe: number;
     lockedByOther: number;
   };
+  /** False when lock state couldn't be resolved (entries are `unknown`). */
+  locksAvailable: boolean;
 }
 
 // ---------------------------------------------------------------------------

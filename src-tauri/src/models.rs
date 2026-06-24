@@ -102,6 +102,20 @@ pub enum LockState {
     LockedByMe,
     LockedByOther,
     Stale,
+    /// Lock state could not be determined — the server was unreachable or the
+    /// lock query timed out. Distinct from `Unlocked` so the UI doesn't imply a
+    /// file is free to edit when we simply don't know.
+    Unknown,
+}
+
+/// The authenticated user, for attributing locks to "me" vs "others".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identity {
+    pub user_id: String,
+    pub name: String,
+    /// False when no `lore login` identity is available.
+    pub authenticated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +194,10 @@ pub struct WorkspaceStatus {
     pub head_revision: Revision,
     pub entries: Vec<FileEntry>,
     pub counts: StatusCounts,
+    /// True if lock state was successfully resolved from the server. When false,
+    /// entries carry `LockState::Unknown` and the UI shows "lock state
+    /// unavailable" rather than implying everything is unlocked.
+    pub locks_available: bool,
 }
 
 // ---------------------------------------------------------------------------

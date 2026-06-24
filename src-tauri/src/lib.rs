@@ -55,18 +55,20 @@ pub fn run() {
             commands::list_diff_tools,
             commands::launch_diff_tool,
             commands::launch_asset_diff,
+            commands::switch_branch,
+            commands::create_branch,
+            commands::sync_repository,
+            commands::push_repository,
+            commands::current_identity,
         ])
         .setup(|app| {
-            // Auto-start the daemon only when explicitly requested. `lore
-            // service run` isn't supported on every OS, and CLI lock/status
-            // ops don't need it — so default off and let the UI start it on
-            // demand via `start_service`.
-            if std::env::var_os("LORE_AUTOSTART_SERVICE").is_some() {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    handle.state::<DaemonController>().start(&handle).await;
-                });
-            }
+            // Start the cross-platform watcher (no-op unless a repository is
+            // configured). Safe on all OSes — it no longer depends on the
+            // unsupported `lore service run`.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                handle.state::<DaemonController>().start(&handle).await;
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

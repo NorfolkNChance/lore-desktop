@@ -129,6 +129,85 @@ fn parse_lock_block(output: &str, header: &str, on_sep: &str) -> Vec<ParsedLock>
     locks
 }
 
+/// One parsed revision from `lore history` (full form).
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParsedRevision {
+    pub number: u64,
+    pub signature: String,
+    pub branch: String,
+    /// Raw RFC-2822 date; the caller normalizes to ISO-8601.
+    pub date: String,
+    pub message: String,
+}
+
+/// Parse `lore history` (full form). Blocks are blank-line separated, newest
+/// first; each has `Revision : N`, `Signature : <hash>`, `Branch : <id>`,
+/// `Date : <RFC-2822>`, then an indented message.
+pub fn parse_history(output: &str) -> Vec<ParsedRevision> {
+    let mut revisions = Vec::new();
+    let mut cur: Option<ParsedRevision> = None;
+    let mut msg_lines: Vec<String> = Vec::new();
+
+    let flush = |cur: &mut Option<ParsedRevision>,
+                 msg_lines: &mut Vec<String>,
+                 out: &mut Vec<ParsedRevision>| {
+        if let Some(mut r) = cur.take() {
+            r.message = msg_lines.join(" ").trim().to_string();
+            out.push(r);
+        }
+        msg_lines.clear();
+    };
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Revision") {
+            // Starting a new block — flush the previous one.
+            flush(&mut cur, &mut msg_lines, &mut revisions);
+            let number = rest.trim_start_matches([' ', ':']).trim().parse().unwrap_or(0);
+            cur = Some(ParsedRevision {
+                number,
+                signature: String::new(),
+                branch: String::new(),
+                date: String::new(),
+                message: String::new(),
+            });
+        } else if let Some(r) = cur.as_mut() {
+            if let Some(rest) = line.strip_prefix("Signature") {
+                r.signature = rest.trim_start_matches([' ', ':']).trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("Branch") {
+                r.branch = rest.trim_start_matches([' ', ':']).trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("Date") {
+                r.date = rest.trim_start_matches([' ', ':']).trim().to_string();
+            } else if !line.trim().is_empty() {
+                // Indented message line.
+                msg_lines.push(line.trim().to_string());
+            }
+        }
+    }
+    flush(&mut cur, &mut msg_lines, &mut revisions);
+    revisions
+}
+
+/// Parse `lore branch list`:
+///   "Local branches:"
+///   "* main"   (current branch marked with `*`)
+///   "  other"
+/// Returns (name, is_current) pairs.
+pub fn parse_branch_list(output: &str) -> Vec<(String, bool)> {
+    let mut branches = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.ends_with(':') {
+            continue; // section headers like "Local branches:"
+        }
+        let is_current = trimmed.starts_with('*');
+        let name = trimmed.trim_start_matches('*').trim();
+        if !name.is_empty() {
+            branches.push((name.to_string(), is_current));
+        }
+    }
+    branches
+}
+
 /// Parse the paths echoed by `lore lock acquire`:
 ///   "Lock acquired on files:"
 ///   "<path>"
@@ -216,5 +295,44 @@ mod tests {
     fn parses_real_lock_acquire() {
         let out = "Lock acquired on files:\nContent/Maps/Volcano.umap\n";
         assert_eq!(parse_lock_acquire(out), vec!["Content/Maps/Volcano.umap".to_string()]);
+    }
+
+    #[test]
+    fn parses_real_history() {
+        // Captured from `lore history` (two revisions, newest first).
+        let out = "Revision  : 2\n\
+                   Signature : 0d32dc7ef674098e56796c08154f014415887e8d16998e4c25dba554c143f652\n\
+                   Branch    : e726318bbc3fd75ac8733a7e030cc35b\n\
+                   Date      : Wed, 24 Jun 2026 19:09:07 +0000\n\
+                   \x20   Add hero blueprint\n\
+                   \n\
+                   Revision  : 1\n\
+                   Signature : 61b52702230ce7ca3f8c5eabee5d63615087303f5123f2080fd5a0f2e6bf0966\n\
+                   Branch    : e726318bbc3fd75ac8733a7e030cc35b\n\
+                   Date      : Wed, 24 Jun 2026 19:08:01 +0000\n\
+                   \x20   Import initial assets\n";
+        let revs = parse_history(out);
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[0].number, 2);
+        assert_eq!(
+            revs[0].signature,
+            "0d32dc7ef674098e56796c08154f014415887e8d16998e4c25dba554c143f652"
+        );
+        assert_eq!(revs[0].date, "Wed, 24 Jun 2026 19:09:07 +0000");
+        assert_eq!(revs[0].message, "Add hero blueprint");
+        assert_eq!(revs[1].number, 1);
+        assert_eq!(revs[1].message, "Import initial assets");
+    }
+
+    #[test]
+    fn parses_real_branch_list() {
+        let out = "Local branches:\n* main\n  feature/foliage\n";
+        assert_eq!(
+            parse_branch_list(out),
+            vec![
+                ("main".to_string(), true),
+                ("feature/foliage".to_string(), false),
+            ]
+        );
     }
 }

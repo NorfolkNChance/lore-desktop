@@ -9,8 +9,10 @@
 import { create } from "zustand";
 import * as lore from "@/api/lore";
 import type {
+  Branch,
   ClientMode,
   DiffTool,
+  Identity,
   IngestSummary,
   LoreEvent,
   Revision,
@@ -45,10 +47,20 @@ interface LoreState {
   ingestSummary: IngestSummary | null;
   diffTools: DiffTool[];
 
+  // VCS workflow
+  branches: Branch[];
+  identity: Identity | null;
+  busy: string | null;
+
   // actions
   bootstrap: () => Promise<void>;
   refreshStatus: () => Promise<void>;
   refreshHistory: () => Promise<void>;
+  refreshBranches: () => Promise<void>;
+  switchBranch: (name: string) => Promise<void>;
+  createBranch: (name: string) => Promise<void>;
+  syncRepo: () => Promise<void>;
+  pushRepo: () => Promise<void>;
   setTab: (tab: SidebarTab) => void;
   selectFile: (path: string | null) => void;
   acquireLock: (path: string, reason?: string) => Promise<void>;
@@ -84,6 +96,10 @@ export const useLoreStore = create<LoreState>((set, get) => ({
   ingestSummary: null,
   diffTools: [],
 
+  branches: [],
+  identity: null,
+  busy: null,
+
   bootstrap: async () => {
     set({ loading: true, error: null });
     try {
@@ -101,7 +117,9 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;
       set({ status, selectedPath });
       await get().refreshHistory();
+      await get().refreshBranches();
       lore.listDiffTools().then((diffTools) => set({ diffTools })).catch(() => {});
+      lore.currentIdentity().then((identity) => set({ identity })).catch(() => {});
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -131,6 +149,66 @@ export const useLoreStore = create<LoreState>((set, get) => ({
     } catch (e) {
       // History is non-critical; don't surface as a blocking error.
       console.warn("history load failed", e);
+    }
+  },
+
+  refreshBranches: async () => {
+    try {
+      const branches = await lore.listBranches();
+      set({ branches });
+    } catch (e) {
+      console.warn("branch load failed", e);
+    }
+  },
+
+  switchBranch: async (name) => {
+    set({ busy: `Switching to ${name}…`, error: null });
+    try {
+      await lore.switchBranch(name);
+      await get().refreshStatus();
+      await get().refreshBranches();
+      await get().refreshHistory();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  createBranch: async (name) => {
+    set({ busy: `Creating ${name}…`, error: null });
+    try {
+      await lore.createBranch(name);
+      await get().refreshBranches();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  syncRepo: async () => {
+    set({ busy: "Syncing…", error: null });
+    try {
+      await lore.syncRepository();
+      await get().refreshStatus();
+      await get().refreshHistory();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  pushRepo: async () => {
+    set({ busy: "Pushing…", error: null });
+    try {
+      await lore.pushRepository();
+      await get().refreshHistory();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
     }
   },
 
@@ -235,6 +313,10 @@ export const useLoreStore = create<LoreState>((set, get) => ({
         case "revisionCommitted":
           void get().refreshStatus();
           void get().refreshHistory();
+          break;
+        case "branchSwitched":
+          void get().refreshBranches();
+          void get().refreshStatus();
           break;
         case "serviceStateChanged":
           if (event.payload && typeof event.payload === "object") {

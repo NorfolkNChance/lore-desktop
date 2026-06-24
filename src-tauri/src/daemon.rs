@@ -1,119 +1,138 @@
-//! Daemon lifecycle controller.
+//! Cross-platform live-update daemon.
 //!
-//! Owns a child `lore service run` process tied to the app's lifetime: started
-//! on setup (when a CLI repository is configured) and stopped gracefully on
-//! exit. "Graceful" = ask `lore service stop` first, then hard-kill the child
-//! if it's still alive — both paths are cross-platform (tokio `Child::kill`
-//! terminates on macOS, Linux, and Windows alike).
+//! `lore service run` ("IPC not supported on this OS" on macOS in 0.8.3) is not
+//! a reliable basis for live updates, so instead of shelling out to it we run
+//! our own watcher: a filesystem watch on the working tree (debounced) emits
+//! `statusChanged`, and a periodic tick emits `lockChanged` to re-query
+//! server-side locks. Works identically on macOS, Windows, and Linux.
+//!
+//! `ServiceState::Running` means the watcher is active. When liblore lands
+//! (Phase D), its in-process event subscription replaces the periodic poll.
 
 use crate::lore::LoreConfig;
 use crate::models::{LoreEvent, LoreEventTag, LoreLogLevel, ServiceState};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 const LORE_EVENT_CHANNEL: &str = "lore://event";
+const DEBOUNCE: Duration = Duration::from_millis(500);
+const LOCK_POLL: Duration = Duration::from_secs(30);
 
 pub struct DaemonController {
     inner: Mutex<DaemonInner>,
     config: LoreConfig,
 }
 
+#[derive(Default)]
 struct DaemonInner {
     state: ServiceState,
-    child: Option<Child>,
+    /// Kept alive while running; dropping it stops the OS watch.
+    watcher: Option<RecommendedWatcher>,
+    /// Signals the background task to stop.
+    stop: Option<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Default for ServiceState {
+    fn default() -> Self {
+        ServiceState::Stopped
+    }
 }
 
 impl DaemonController {
     pub fn new(config: LoreConfig) -> Self {
-        Self {
-            inner: Mutex::new(DaemonInner { state: ServiceState::Stopped, child: None }),
-            config,
-        }
+        Self { inner: Mutex::new(DaemonInner::default()), config }
     }
 
     pub async fn state(&self) -> ServiceState {
         self.inner.lock().await.state
     }
 
-    async fn set_state(&self, app: &AppHandle, next: ServiceState) {
-        self.inner.lock().await.state = next;
-        emit_state(app, next);
-    }
-
-    /// Spawn `lore service run` for the configured repository. No-op (stays
-    /// `Stopped`) when there's no binary/repository — the mock backend needs no
-    /// daemon.
+    /// Start watching the configured repository. No-op (stays `Stopped`) when no
+    /// repository is configured (the mock backend needs no watcher).
     pub async fn start(&self, app: &AppHandle) {
-        let (binary, repository) = match (&self.config.binary, &self.config.repository) {
-            (Some(b), Some(r)) if r.exists() => (b.clone(), r.clone()),
+        let repo = match &self.config.repository {
+            Some(r) if r.exists() => r.clone(),
             _ => {
-                log::info!("daemon: no repository configured; staying stopped");
+                log::info!("daemon: no repository configured; watcher idle");
                 return;
             }
         };
-
         {
             let inner = self.inner.lock().await;
             if matches!(inner.state, ServiceState::Running | ServiceState::Starting) {
                 return;
             }
         }
-        self.set_state(app, ServiceState::Starting).await;
+        set_state(self, app, ServiceState::Starting).await;
 
-        let spawn = Command::new(&binary)
-            .current_dir(&repository)
-            .arg("--non-interactive")
-            .arg("--repository")
-            .arg(&repository)
-            .args(["service", "run"])
-            .kill_on_drop(true)
-            .spawn();
-
-        match spawn {
-            Ok(child) => {
-                let mut inner = self.inner.lock().await;
-                inner.child = Some(child);
-                inner.state = ServiceState::Running;
-                drop(inner);
-                emit_state(app, ServiceState::Running);
-                log::info!("daemon: lore service started for {}", repository.display());
-            }
-            Err(e) => {
-                log::error!("daemon: failed to start service: {e}");
-                self.set_state(app, ServiceState::Error).await;
-            }
-        }
-    }
-
-    /// Graceful shutdown: ask the service to stop, then kill the child if it
-    /// outlives the request. Safe to call when already stopped.
-    pub async fn stop(&self, app: &AppHandle) {
-        self.set_state(app, ServiceState::Stopping).await;
-
-        if let (Some(binary), Some(repository)) = (&self.config.binary, &self.config.repository) {
-            // Best-effort cooperative stop; ignore failure (service may already
-            // be gone, or never registered).
-            let _ = Command::new(binary)
-                .current_dir(repository)
-                .arg("--non-interactive")
-                .arg("--repository")
-                .arg(repository)
-                .args(["service", "stop"])
-                .output()
-                .await;
-        }
-
-        let mut inner = self.inner.lock().await;
-        if let Some(mut child) = inner.child.take() {
-            // If still running, terminate it.
-            match child.try_wait() {
-                Ok(Some(_)) => {}
-                _ => {
-                    let _ = child.kill().await;
+        // Bridge notify's (sync, own-thread) callback to async via an unbounded
+        // channel. Ignore churn inside `.lore/` to avoid feedback loops.
+        let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let watcher_result = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let internal = event
+                    .paths
+                    .iter()
+                    .all(|p| p.components().any(|c| c.as_os_str() == ".lore"));
+                if !internal {
+                    let _ = fs_tx.send(());
                 }
             }
+        });
+
+        let mut watcher = match watcher_result {
+            Ok(w) => w,
+            Err(e) => {
+                log::error!("daemon: failed to create watcher: {e}");
+                set_state(self, app, ServiceState::Error).await;
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&repo, RecursiveMode::Recursive) {
+            log::error!("daemon: failed to watch {}: {e}", repo.display());
+            set_state(self, app, ServiceState::Error).await;
+            return;
         }
+
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let app_bg = app.clone();
+        tokio::spawn(async move {
+            let mut poll = tokio::time::interval(LOCK_POLL);
+            poll.tick().await; // consume the immediate first tick
+            loop {
+                tokio::select! {
+                    _ = stop_rx.changed() => break,
+                    Some(()) = fs_rx.recv() => {
+                        // Debounce: let a burst of edits settle, then refresh once.
+                        tokio::time::sleep(DEBOUNCE).await;
+                        while fs_rx.try_recv().is_ok() {}
+                        emit(&app_bg, LoreEventTag::StatusChanged, serde_json::json!({ "source": "watcher" }));
+                    }
+                    _ = poll.tick() => {
+                        emit(&app_bg, LoreEventTag::LockChanged, serde_json::json!({ "source": "poll" }));
+                    }
+                }
+            }
+        });
+
+        let mut inner = self.inner.lock().await;
+        inner.watcher = Some(watcher);
+        inner.stop = Some(stop_tx);
+        inner.state = ServiceState::Running;
+        drop(inner);
+        emit_state(app, ServiceState::Running);
+        log::info!("daemon: watching {}", repo.display());
+    }
+
+    /// Stop the watcher. Safe to call when already stopped.
+    pub async fn stop(&self, app: &AppHandle) {
+        let mut inner = self.inner.lock().await;
+        if let Some(stop) = inner.stop.take() {
+            let _ = stop.send(true);
+        }
+        inner.watcher = None; // dropping unregisters the OS watch
         inner.state = ServiceState::Stopped;
         drop(inner);
         emit_state(app, ServiceState::Stopped);
@@ -121,12 +140,21 @@ impl DaemonController {
     }
 }
 
+async fn set_state(ctl: &DaemonController, app: &AppHandle, next: ServiceState) {
+    ctl.inner.lock().await.state = next;
+    emit_state(app, next);
+}
+
 fn emit_state(app: &AppHandle, state: ServiceState) {
+    emit(app, LoreEventTag::ServiceStateChanged, serde_json::json!({ "state": state }));
+}
+
+fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
     let event = LoreEvent {
-        tag: LoreEventTag::ServiceStateChanged,
+        tag,
         timestamp: chrono::Utc::now().to_rfc3339(),
         level: LoreLogLevel::Info,
-        payload: Some(serde_json::json!({ "state": state })),
+        payload: Some(payload),
     };
     let _ = app.emit(LORE_EVENT_CHANNEL, event);
 }

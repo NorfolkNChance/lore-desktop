@@ -88,9 +88,11 @@ export default function App() {
 
       <footer className="flex items-center justify-between border-t border-line bg-subtle px-4 py-1 text-[11px] text-muted">
         <span>
-          {counts
-            ? `${counts.staged} staged · ${counts.modified} modified · ${counts.lockedByMe} locked by you · ${counts.lockedByOther} by others`
-            : "—"}
+          {!counts
+            ? "—"
+            : status && !status.locksAvailable
+              ? `${counts.staged} staged · ${counts.modified} modified · lock state unavailable`
+              : `${counts.staged} staged · ${counts.modified} modified · ${counts.lockedByMe} locked by you · ${counts.lockedByOther} by others`}
         </span>
         <span>
           {lastEvent

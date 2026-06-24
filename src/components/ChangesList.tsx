@@ -82,7 +82,13 @@ function FileRow({
         title={badge.label}
         className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.classes}`}
       >
-        {lockedByOther ? "🔒 other" : entry.lockState === "lockedByMe" ? "🔒 you" : "○"}
+        {entry.lockState === "lockedByMe"
+          ? "🔒 you"
+          : lockedByOther
+            ? "🔒 other"
+            : entry.lockState === "unknown"
+              ? "🔒 ?"
+              : "○"}
       </span>
 
       <span

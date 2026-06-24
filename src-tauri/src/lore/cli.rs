@@ -22,11 +22,36 @@ pub struct CliLoreClient {
     /// local store lock and can deadlock. A GUI fires several reads at once
     /// (status + locks on bootstrap), so we funnel them through one at a time.
     gate: tokio::sync::Mutex<()>,
+    /// Cached identity (resolved once via `lore auth info`).
+    identity: tokio::sync::OnceCell<Identity>,
 }
 
 impl CliLoreClient {
     pub fn new(binary: PathBuf, repository: PathBuf) -> Self {
-        Self { binary, repository, gate: tokio::sync::Mutex::new(()) }
+        Self {
+            binary,
+            repository,
+            gate: tokio::sync::Mutex::new(()),
+            identity: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Resolve and cache the current identity. `lore auth info` is empty / errors
+    /// when not logged in → `authenticated: false`.
+    async fn identity(&self) -> Identity {
+        self.identity
+            .get_or_init(|| async {
+                match self.run(&["auth", "info"]).await {
+                    Ok(out) if !out.trim().is_empty() => parse_identity(&out),
+                    _ => Identity {
+                        user_id: String::new(),
+                        name: String::new(),
+                        authenticated: false,
+                    },
+                }
+            })
+            .await
+            .clone()
     }
 
     /// Run `lore <args>` with the repository as cwd, returning stdout on
@@ -111,9 +136,11 @@ impl LoreClient for CliLoreClient {
     }
 
     async fn status(&self) -> LoreResult<WorkspaceStatus> {
-        // Read status from the local store: instant, and never blocks on the
-        // remote. Everything the UI needs (branch, revision, file list) is local.
-        let status_out = self.run_offline(&["status"]).await?;
+        // Read status from the local store (offline = never blocks on the
+        // remote). `--scan` walks the working tree so brand-new untracked files
+        // are detected — essential for the file-watcher to surface edits a user
+        // just made, since plain `status` only reports already-dirty files.
+        let status_out = self.run_offline(&["status", "--scan"]).await?;
         let mut parsed = parse::parse_status(&status_out);
         // `lore status` can list a path more than once (e.g. untracked + dirty);
         // collapse to one entry per path, keeping first-seen order.
@@ -123,32 +150,35 @@ impl LoreClient for CliLoreClient {
         }
 
         // Lock state is server-authoritative (no offline form). Bound it tightly
-        // so a slow/unreachable remote degrades the file list to "unknown lock"
-        // rather than stalling it. status() never fails on the lock merge.
-        let locks = tokio::time::timeout(
+        // so a slow/unreachable remote degrades to "unknown lock" rather than
+        // stalling. Distinguish a successful (possibly empty) result from a
+        // failure/timeout: on failure, locks are *unknown*, not *unlocked*.
+        let lock_result = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.query_locks(),
         )
         .await
         .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or_default();
-        let locked_paths: std::collections::HashSet<&str> =
-            locks.iter().map(|l| l.path.as_str()).collect();
+        .and_then(|r| r.ok());
+        let locks_available = lock_result.is_some();
+        let locks = lock_result.unwrap_or_default();
+        let lock_by_path: std::collections::HashMap<&str, &Lock> =
+            locks.iter().map(|l| (l.path.as_str(), l)).collect();
 
         let entries: Vec<FileEntry> = parsed
             .files
             .iter()
             .map(|(marker, path)| {
-                let lock_state = if locked_paths.contains(path.as_str()) {
-                    // The local single-identity CLI can't yet distinguish
-                    // "me" vs "other"; treat any held lock as ours. Identity
-                    // resolution arrives with `lore login` / the FFI client.
-                    LockState::LockedByMe
+                let found = lock_by_path.get(path.as_str());
+                let lock_state = if !locks_available {
+                    LockState::Unknown
                 } else {
-                    LockState::Unlocked
+                    match found {
+                        Some(l) => l.state,
+                        None => LockState::Unlocked,
+                    }
                 };
-                let lock = locks.iter().find(|l| l.path == *path).cloned();
+                let lock = found.map(|l| (*l).clone());
                 let kind = asset_kind_for(path);
                 FileEntry {
                     path: path.clone(),
@@ -209,22 +239,35 @@ impl LoreClient for CliLoreClient {
             head_revision,
             entries,
             counts,
+            locks_available,
         })
     }
 
     async fn query_locks(&self) -> LoreResult<Vec<Lock>> {
         let out = self.run(&["lock", "query"]).await?;
-        Ok(parse::parse_lock_query(&out)
+        let identity = self.identity().await;
+        let locks = parse::parse_lock_query(&out)
             .into_iter()
-            .map(|p| Lock {
-                path: p.path,
-                state: LockState::LockedByMe,
-                owner: Some(Author { name: p.owner, email: String::new() }),
-                instance_id: None,
-                acquired_at: None,
-                reason: None,
+            .map(|p| {
+                // Attribute me vs. other by comparing the lock owner to the
+                // authenticated identity. Without login we can't tell, so fall
+                // back to "locked by me" (single-user assumption).
+                let state = if identity.authenticated && !owner_is_me(&p.owner, &identity) {
+                    LockState::LockedByOther
+                } else {
+                    LockState::LockedByMe
+                };
+                Lock {
+                    path: p.path,
+                    state,
+                    owner: Some(Author { name: p.owner, email: String::new() }),
+                    instance_id: None,
+                    acquired_at: None,
+                    reason: None,
+                }
             })
-            .collect())
+            .collect();
+        Ok(locks)
     }
 
     async fn lock_status(&self, path: &str) -> LoreResult<LockState> {
@@ -283,6 +326,114 @@ impl LoreClient for CliLoreClient {
         let out = self.run(&["commit", message]).await?;
         Ok(out.trim().to_string())
     }
+
+    async fn list_branches(&self) -> LoreResult<Vec<Branch>> {
+        let out = self.run_offline(&["branch", "list"]).await?;
+        Ok(parse::parse_branch_list(&out)
+            .into_iter()
+            .map(|(name, _current)| Branch {
+                id: String::new(),
+                name,
+                latest_revision: String::new(),
+                protected: false,
+            })
+            .collect())
+    }
+
+    async fn switch_branch(&self, name: &str) -> LoreResult<()> {
+        self.run(&["branch", "switch", name]).await?;
+        Ok(())
+    }
+
+    async fn create_branch(&self, name: &str) -> LoreResult<()> {
+        self.run(&["branch", "create", name]).await?;
+        Ok(())
+    }
+
+    async fn history(&self, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
+        let limit_s;
+        let mut args = vec!["history"];
+        if let Some(n) = limit {
+            limit_s = n.to_string();
+            args.push(&limit_s);
+        }
+        let out = self.run_offline(&args).await?;
+        Ok(parse::parse_history(&out)
+            .into_iter()
+            .map(|r| Revision {
+                id: r.signature,
+                parents: vec![],
+                message: r.message,
+                author: Author { name: String::new(), email: String::new() },
+                timestamp: rfc2822_to_iso(&r.date),
+                tree_root: FragmentAddress { hash: String::new(), context: String::new() },
+                is_merge: false,
+            })
+            .collect())
+    }
+
+    async fn sync(&self, revision: Option<String>) -> LoreResult<()> {
+        let mut args = vec!["sync"];
+        if let Some(rev) = &revision {
+            args.push(rev);
+        }
+        self.run(&args).await?;
+        Ok(())
+    }
+
+    async fn push(&self, branch: Option<String>) -> LoreResult<()> {
+        let mut args = vec!["push"];
+        if let Some(b) = &branch {
+            args.push(b);
+        }
+        self.run(&args).await?;
+        Ok(())
+    }
+
+    async fn current_identity(&self) -> LoreResult<Identity> {
+        Ok(self.identity().await)
+    }
+}
+
+/// True if a lock owner string refers to the authenticated identity.
+fn owner_is_me(owner: &str, identity: &Identity) -> bool {
+    let o = owner.trim();
+    o == "<unknown>"
+        || (!identity.user_id.is_empty() && o.contains(&identity.user_id))
+        || (!identity.name.is_empty() && o.contains(&identity.name))
+}
+
+/// Parse `lore auth info` into an `Identity`. The exact layout depends on the
+/// auth backend; we extract a user id and a display name best-effort and treat
+/// any non-empty output as authenticated.
+fn parse_identity(output: &str) -> Identity {
+    let mut user_id = String::new();
+    let mut name = String::new();
+    for line in output.lines() {
+        let l = line.trim();
+        if let Some((k, v)) = l.split_once(':') {
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim().to_string();
+            if key.contains("id") && user_id.is_empty() {
+                user_id = val;
+            } else if (key.contains("name") || key.contains("user") || key.contains("email"))
+                && name.is_empty()
+            {
+                name = val;
+            }
+        }
+    }
+    if user_id.is_empty() && name.is_empty() {
+        name = output.trim().lines().next().unwrap_or("").to_string();
+    }
+    Identity { user_id, name, authenticated: true }
+}
+
+/// RFC-2822 (`lore history` Date) -> ISO-8601; falls back to the raw string.
+fn rfc2822_to_iso(date: &str) -> String {
+    chrono::DateTime::parse_from_rfc2822(date)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_else(|_| date.to_string())
 }
 
 /// Best-effort file size from the working tree.
