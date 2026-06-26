@@ -101,6 +101,32 @@ pub trait LoreClient: Send + Sync {
     /// Commit the staged revision (`lore commit <message>`). Returns the CLI's
     /// confirmation text.
     async fn commit(&self, message: &str) -> LoreResult<String>;
+
+    // -- VCS workflow (Phase A) --------------------------------------------
+
+    /// All branches (`lore branch list`).
+    async fn list_branches(&self) -> LoreResult<Vec<Branch>>;
+
+    /// Switch the working tree to a branch (`lore branch switch <name>`).
+    async fn switch_branch(&self, name: &str) -> LoreResult<()>;
+
+    /// Create a new branch (`lore branch create <name>`).
+    async fn create_branch(&self, name: &str) -> LoreResult<()>;
+
+    /// Revision history, newest first (`lore history`).
+    async fn history(&self, limit: Option<u32>) -> LoreResult<Vec<Revision>>;
+
+    /// Synchronize the working tree to a revision (`lore sync [revision]`).
+    async fn sync(&self, revision: Option<String>) -> LoreResult<()>;
+
+    /// Push commits to the remote (`lore push [branch]`).
+    async fn push(&self, branch: Option<String>) -> LoreResult<()>;
+
+    // -- Identity (Phase B1) -----------------------------------------------
+
+    /// The authenticated user, used to attribute locks to me vs. others
+    /// (`lore auth info`). Returns `authenticated: false` when not logged in.
+    async fn current_identity(&self) -> LoreResult<Identity>;
 }
 
 /// Resolved configuration for talking to Lore.

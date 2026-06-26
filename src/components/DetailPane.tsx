@@ -82,11 +82,13 @@ function LockPanel({ entry }: { entry: FileEntry }) {
           {badge.label}
         </div>
         <div className="text-[11px] text-muted">
-          {lock?.owner
-            ? `${lock.owner.name}${
-                lock.acquiredAt ? ` · ${relativeTime(lock.acquiredAt)}` : ""
-              }${lock.reason ? ` · "${lock.reason}"` : ""}`
-            : "No exclusive lock held"}
+          {entry.lockState === "unknown"
+            ? "Couldn't reach the lock server — state unknown"
+            : lock?.owner
+              ? `${lock.owner.name}${
+                  lock.acquiredAt ? ` · ${relativeTime(lock.acquiredAt)}` : ""
+                }${lock.reason ? ` · "${lock.reason}"` : ""}`
+              : "No exclusive lock held"}
         </div>
       </div>
 
@@ -104,6 +106,13 @@ function LockPanel({ entry }: { entry: FileEntry }) {
           className="cursor-not-allowed rounded-md border border-line px-3 py-1.5 text-[12px] text-faint"
         >
           Locked
+        </button>
+      ) : entry.lockState === "unknown" ? (
+        <button
+          onClick={() => useLoreStore.getState().refreshStatus()}
+          className="rounded-md border border-line bg-canvas px-3 py-1.5 text-[12px] font-medium hover:bg-subtle"
+        >
+          Retry
         </button>
       ) : (
         <button

@@ -223,6 +223,7 @@ pub fn workspace_status() -> WorkspaceStatus {
         head_revision: revisions().into_iter().next().unwrap(),
         entries,
         counts,
+        locks_available: true,
     }
 }
 

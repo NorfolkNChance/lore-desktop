@@ -94,6 +94,11 @@ export const lockBadge: Record<
     classes: "bg-danger-subtle text-danger",
     icon: "●",
   },
+  unknown: {
+    label: "Lock state unavailable",
+    classes: "bg-attention-subtle text-attention",
+    icon: "?",
+  },
 };
 
 export function fileName(path: string): string {

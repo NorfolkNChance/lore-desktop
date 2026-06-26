@@ -15,6 +15,9 @@ pub struct MockLoreClient {
     staged: Mutex<HashSet<String>>,
     /// Paths committed this session (filtered out of the changes list).
     committed: Mutex<HashSet<String>>,
+    /// Branch names; the current one is tracked separately.
+    branches: Mutex<Vec<String>>,
+    current_branch: Mutex<String>,
 }
 
 impl MockLoreClient {
@@ -30,6 +33,8 @@ impl MockLoreClient {
             locks: Mutex::new(locks),
             staged: Mutex::new(staged),
             committed: Mutex::new(HashSet::new()),
+            branches: Mutex::new(vec!["main".into(), "feature/foliage-lod".into()]),
+            current_branch: Mutex::new("main".into()),
         }
     }
 
@@ -68,6 +73,9 @@ impl MockLoreClient {
                 acquired_at: None,
                 reason: None,
             }),
+            // The mock is always local/authoritative, so it never reports
+            // Unknown — but the match must be exhaustive.
+            LockState::Unknown => None,
         }
     }
 }
@@ -87,6 +95,8 @@ impl LoreClient for MockLoreClient {
         let staged = self.staged.lock().unwrap();
         let committed = self.committed.lock().unwrap();
         let mut status = crate::mock::workspace_status();
+        status.locks_available = true; // mock is always local/available
+        status.branch.name = self.current_branch.lock().unwrap().clone();
         // Drop committed paths from the working-tree changes.
         status.entries.retain(|e| !committed.contains(&e.path));
         for entry in &mut status.entries {
@@ -173,5 +183,60 @@ impl LoreClient for MockLoreClient {
             committed.insert(p);
         }
         Ok(format!("committed {n} file(s): {message}"))
+    }
+
+    async fn list_branches(&self) -> LoreResult<Vec<Branch>> {
+        let branches = self.branches.lock().unwrap();
+        Ok(branches
+            .iter()
+            .map(|name| Branch {
+                id: String::new(),
+                name: name.clone(),
+                latest_revision: String::new(),
+                protected: name == "main",
+            })
+            .collect())
+    }
+
+    async fn switch_branch(&self, name: &str) -> LoreResult<()> {
+        let branches = self.branches.lock().unwrap();
+        if !branches.iter().any(|b| b == name) {
+            return Err(LoreError::Cli(format!("unknown branch: {name}")));
+        }
+        *self.current_branch.lock().unwrap() = name.to_string();
+        Ok(())
+    }
+
+    async fn create_branch(&self, name: &str) -> LoreResult<()> {
+        let mut branches = self.branches.lock().unwrap();
+        if branches.iter().any(|b| b == name) {
+            return Err(LoreError::Cli(format!("branch already exists: {name}")));
+        }
+        branches.push(name.to_string());
+        Ok(())
+    }
+
+    async fn history(&self, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
+        let mut revs = crate::mock::revisions();
+        if let Some(n) = limit {
+            revs.truncate(n as usize);
+        }
+        Ok(revs)
+    }
+
+    async fn sync(&self, _revision: Option<String>) -> LoreResult<()> {
+        Ok(())
+    }
+
+    async fn push(&self, _branch: Option<String>) -> LoreResult<()> {
+        Ok(())
+    }
+
+    async fn current_identity(&self) -> LoreResult<Identity> {
+        Ok(Identity {
+            user_id: "norfolknchance".into(),
+            name: "James Burns".into(),
+            authenticated: true,
+        })
     }
 }

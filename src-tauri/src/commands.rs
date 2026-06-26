@@ -97,13 +97,7 @@ pub async fn get_workspace_status(
 
 #[tauri::command]
 pub async fn list_branches(state: State<'_, AppState>) -> Result<Vec<Branch>, String> {
-    match state.mode {
-        ClientMode::Mock => Ok(vec![crate::mock::branch()]),
-        ClientMode::Cli => {
-            let status = state.client.status().await.map_err(|e| e.to_string())?;
-            Ok(vec![status.branch])
-        }
-    }
+    state.client.list_branches().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -111,18 +105,60 @@ pub async fn list_revisions(
     state: State<'_, AppState>,
     limit: Option<u32>,
 ) -> Result<Vec<Revision>, String> {
-    let mut revs = match state.mode {
-        ClientMode::Mock => crate::mock::revisions(),
-        // History parsing isn't wired yet; surface at least the head revision.
-        ClientMode::Cli => {
-            let status = state.client.status().await.map_err(|e| e.to_string())?;
-            vec![status.head_revision]
-        }
-    };
-    if let Some(n) = limit {
-        revs.truncate(n as usize);
-    }
-    Ok(revs)
+    state.client.history(limit).await.map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// VCS workflow (branches, sync, push) + identity
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn switch_branch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<(), String> {
+    state.client.switch_branch(&name).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "branch": name }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_branch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<(), String> {
+    state.client.create_branch(&name).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::BranchSwitched, serde_json::json!({ "created": name }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_repository(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    revision: Option<String>,
+) -> Result<(), String> {
+    state.client.sync(revision).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "synced": true }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn push_repository(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    branch: Option<String>,
+) -> Result<(), String> {
+    state.client.push(branch).await.map_err(|e| e.to_string())?;
+    emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "pushed": true }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn current_identity(state: State<'_, AppState>) -> Result<Identity, String> {
+    state.client.current_identity().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
