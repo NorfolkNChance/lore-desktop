@@ -61,6 +61,40 @@ const EV_COMPLETE: u32 = sys::lore_event_id_t_LORE_EVENT_COMPLETE as u32;
 const EV_END: u32 = sys::lore_event_id_t_LORE_EVENT_END as u32;
 const EV_BRANCH_LIST_ENTRY: u32 = sys::lore_event_id_t_LORE_EVENT_BRANCH_LIST_ENTRY as u32;
 const EV_AUTH_USER_INFO: u32 = sys::lore_event_id_t_LORE_EVENT_AUTH_USER_INFO as u32;
+const EV_STATUS_FILE: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_FILE as u32;
+const EV_STATUS_REVISION: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_REVISION as u32;
+const EV_LOCK_QUERY: u32 = sys::lore_event_id_t_LORE_EVENT_LOCK_FILE_QUERY as u32;
+
+// lore_file_action_t values.
+const ACTION_ADD: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_ADD as u32;
+const ACTION_DELETE: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_DELETE as u32;
+const ACTION_MOVE: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_MOVE as u32;
+const ACTION_COPY: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_COPY as u32;
+const NODE_DIRECTORY: u32 = sys::lore_node_type_t_LORE_NODE_TYPE_DIRECTORY as u32;
+
+/// Render a 32-byte `lore_hash_t` as lowercase hex.
+fn hash_to_hex(h: &sys::lore_hash_t) -> String {
+    h.data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Classify an asset by extension (FFI-local copy of the CLI heuristic).
+fn asset_kind_for(path: &str) -> AssetKind {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "umap" => AssetKind::Umap,
+        "uasset" => AssetKind::Uasset,
+        "png" | "tga" | "jpg" | "jpeg" | "exr" | "dds" => AssetKind::Texture,
+        "wav" | "ogg" | "mp3" => AssetKind::Audio,
+        "txt" | "ini" | "json" | "xml" | "cpp" | "h" | "rs" | "ts" | "md" | "toml" => {
+            AssetKind::Text
+        }
+        _ => AssetKind::Binary,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // FFI plumbing: event-collector pattern
@@ -243,6 +277,158 @@ fn ffi_current_identity(repo: &Path) -> LoreResult<Identity> {
     }
 }
 
+/// Working-tree status via `lore_repository_status` (offline = local-first, with
+/// `scan` so brand-new files are detected). Locks are merged separately by the
+/// trait method; here every entry starts as `Unknown`.
+fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let mut args: sys::lore_repository_status_args_t = unsafe { std::mem::zeroed() };
+    args.scan = 1; // walk the filesystem so new untracked files appear
+    args.staged = 1;
+
+    let mut entries: Vec<FileEntry> = Vec::new();
+    let mut branch = Branch {
+        id: String::new(),
+        name: "main".into(),
+        latest_revision: String::new(),
+        protected: false,
+    };
+    let mut head = Revision {
+        id: String::new(),
+        parents: vec![],
+        message: String::new(),
+        author: Author { name: String::new(), email: String::new() },
+        timestamp: String::new(),
+        tree_root: FragmentAddress { hash: String::new(), context: String::new() },
+        is_merge: false,
+    };
+    let mut workspace_id = String::new();
+    let mut outcome = OpOutcome::default();
+
+    let rc = run_event_op(
+        |cfg| unsafe { sys::lore_repository_status(&globals, &args, cfg) },
+        |event| unsafe {
+            if outcome.absorb(event) {
+                return;
+            }
+            match event.tag {
+                t if t == EV_STATUS_FILE => {
+                    let f = &event.__bindgen_anon_1.repository_status_file;
+                    // Skip directories; the UI lists files.
+                    if f.type_ as u32 == NODE_DIRECTORY {
+                        return;
+                    }
+                    let path = lore_string(&f.path);
+                    let action = f.action as u32;
+                    let dirty = f.flag_dirty != 0;
+                    let change = if action == ACTION_ADD {
+                        FileChange::Added
+                    } else if action == ACTION_DELETE {
+                        FileChange::Deleted
+                    } else if action == ACTION_MOVE {
+                        FileChange::Renamed
+                    } else if action == ACTION_COPY {
+                        FileChange::Added
+                    } else if dirty {
+                        FileChange::Modified // KEEP + dirty content
+                    } else {
+                        FileChange::Unchanged
+                    };
+                    let kind = asset_kind_for(&path);
+                    entries.push(FileEntry {
+                        path,
+                        file_id: String::new(),
+                        change,
+                        staged: f.flag_staged != 0,
+                        dirty,
+                        is_binary: !matches!(kind, AssetKind::Text),
+                        asset_kind: kind,
+                        size_bytes: f.size,
+                        fragment_count: 0,
+                        lock_state: LockState::Unknown,
+                        lock: None,
+                    });
+                }
+                t if t == EV_STATUS_REVISION => {
+                    let r = &event.__bindgen_anon_1.repository_status_revision;
+                    branch.name = lore_string(&r.branch_name);
+                    let rev = hash_to_hex(&r.revision);
+                    branch.latest_revision = rev.clone();
+                    head.id = rev;
+                    workspace_id = format!("{:x?}", r.repository); // opaque id
+                }
+                _ => {}
+            }
+        },
+    );
+    outcome.into_result(rc, "repository_status")?;
+
+    let counts = StatusCounts {
+        staged: entries.iter().filter(|e| e.staged).count() as u32,
+        modified: entries
+            .iter()
+            .filter(|e| matches!(e.change, FileChange::Modified))
+            .count() as u32,
+        locked_by_me: 0,
+        locked_by_other: 0,
+    };
+    Ok(WorkspaceStatus {
+        workspace_id,
+        branch,
+        head_revision: head,
+        entries,
+        counts,
+        locks_available: false, // filled by the lock merge in status()
+    })
+}
+
+/// All locks on the current branch via `lore_lock_file_query`.
+fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, false); // locks are server-authoritative
+    let empty = sys::lore_string_t { string: std::ptr::null(), length: 0 };
+    let args = sys::lore_lock_file_query_args_t {
+        branch: empty,
+        owner: empty,
+        path: empty,
+    };
+
+    let mut locks: Vec<Lock> = Vec::new();
+    let mut outcome = OpOutcome::default();
+    let rc = run_event_op(
+        |cfg| unsafe { sys::lore_lock_file_query(&globals, &args, cfg) },
+        |event| unsafe {
+            if outcome.absorb(event) {
+                return;
+            }
+            if event.tag == EV_LOCK_QUERY {
+                let q = &event.__bindgen_anon_1.lock_file_query;
+                let owner = lore_string(&q.owner);
+                let state = if identity.authenticated
+                    && !owner.is_empty()
+                    && owner != identity.user_id
+                    && owner != identity.name
+                {
+                    LockState::LockedByOther
+                } else {
+                    LockState::LockedByMe
+                };
+                locks.push(Lock {
+                    path: lore_string(&q.path),
+                    state,
+                    owner: Some(Author { name: owner, email: String::new() }),
+                    instance_id: None,
+                    acquired_at: None,
+                    reason: None,
+                });
+            }
+        },
+    );
+    outcome.into_result(rc, "lock_file_query")?;
+    Ok(locks)
+}
+
 #[async_trait]
 impl LoreClient for FfiLoreClient {
     fn mode(&self) -> ClientMode {
@@ -254,12 +440,61 @@ impl LoreClient for FfiLoreClient {
     }
 
     async fn status(&self) -> LoreResult<WorkspaceStatus> {
-        let _ = &self.repository;
-        Err(pending("status"))
+        let repo = self.repository.clone();
+        let mut status = tokio::task::spawn_blocking(move || ffi_repository_status(&repo))
+            .await
+            .map_err(|e| LoreError::Io(e.to_string()))??;
+
+        // Merge server-side lock state, bounded so a slow/unreachable remote
+        // degrades to "unknown" rather than stalling (mirrors the CLI client).
+        let lock_result = tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            self.query_locks(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+        if let Some(locks) = lock_result {
+            let by_path: std::collections::HashMap<&str, &Lock> =
+                locks.iter().map(|l| (l.path.as_str(), l)).collect();
+            for e in &mut status.entries {
+                match by_path.get(e.path.as_str()) {
+                    Some(l) => {
+                        e.lock_state = l.state;
+                        e.lock = Some((*l).clone());
+                    }
+                    None => e.lock_state = LockState::Unlocked,
+                }
+            }
+            status.locks_available = true;
+            status.counts.locked_by_me = status
+                .entries
+                .iter()
+                .filter(|e| e.lock_state == LockState::LockedByMe)
+                .count() as u32;
+            status.counts.locked_by_other = status
+                .entries
+                .iter()
+                .filter(|e| e.lock_state == LockState::LockedByOther)
+                .count() as u32;
+        }
+        // else: entries stay Unknown, locks_available stays false.
+        Ok(status)
     }
 
     async fn query_locks(&self) -> LoreResult<Vec<Lock>> {
-        Err(pending("query_locks"))
+        let repo = self.repository.clone();
+        tokio::task::spawn_blocking(move || {
+            let identity = ffi_current_identity(&repo).unwrap_or(Identity {
+                user_id: String::new(),
+                name: String::new(),
+                authenticated: false,
+            });
+            ffi_query_locks(&repo, &identity)
+        })
+        .await
+        .map_err(|e| LoreError::Io(e.to_string()))?
     }
 
     async fn lock_status(&self, _path: &str) -> LoreResult<LockState> {
@@ -343,5 +578,23 @@ mod tests {
         let branches = ffi_list_branches(Path::new(&repo)).expect("branch_list");
         eprintln!("FFI branches: {:?}", branches.iter().map(|b| &b.name).collect::<Vec<_>>());
         assert!(branches.iter().any(|b| b.name == "main"), "expected a 'main' branch");
+    }
+
+    #[test]
+    #[ignore]
+    fn ffi_status_against_live_repo() {
+        let repo = std::env::var("LORE_TEST_REPO").unwrap_or_else(|_| "/tmp/lore-wf".into());
+        let status = ffi_repository_status(Path::new(&repo)).expect("status");
+        eprintln!(
+            "FFI status: branch={} rev={} entries={}",
+            status.branch.name,
+            &status.head_revision.id[..status.head_revision.id.len().min(10)],
+            status.entries.len()
+        );
+        for e in &status.entries {
+            eprintln!("  {:?} {} ({} B)", e.change, e.path, e.size_bytes);
+        }
+        assert_eq!(status.branch.name, "main");
+        assert!(!status.head_revision.id.is_empty(), "expected a head revision");
     }
 }
