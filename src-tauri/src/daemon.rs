@@ -22,12 +22,13 @@ const LOCK_POLL: Duration = Duration::from_secs(30);
 
 pub struct DaemonController {
     inner: Mutex<DaemonInner>,
-    config: LoreConfig,
 }
 
 #[derive(Default)]
 struct DaemonInner {
     state: ServiceState,
+    /// The repository currently watched. Re-pointable via `restart`.
+    repository: Option<std::path::PathBuf>,
     /// Kept alive while running; dropping it stops the OS watch.
     watcher: Option<RecommendedWatcher>,
     /// Signals the background task to stop.
@@ -42,21 +43,36 @@ impl Default for ServiceState {
 
 impl DaemonController {
     pub fn new(config: LoreConfig) -> Self {
-        Self { inner: Mutex::new(DaemonInner::default()), config }
+        let inner = DaemonInner {
+            repository: config.repository,
+            ..Default::default()
+        };
+        Self { inner: Mutex::new(inner) }
     }
 
     pub async fn state(&self) -> ServiceState {
         self.inner.lock().await.state
     }
 
+    /// Re-point the watcher at a new repository (used when the user opens or
+    /// clones a different repo at runtime).
+    pub async fn restart(&self, app: &AppHandle, repository: std::path::PathBuf) {
+        self.stop(app).await;
+        self.inner.lock().await.repository = Some(repository);
+        self.start(app).await;
+    }
+
     /// Start watching the configured repository. No-op (stays `Stopped`) when no
     /// repository is configured (the mock backend needs no watcher).
     pub async fn start(&self, app: &AppHandle) {
-        let repo = match &self.config.repository {
-            Some(r) if r.exists() => r.clone(),
-            _ => {
-                log::info!("daemon: no repository configured; watcher idle");
-                return;
+        let repo = {
+            let inner = self.inner.lock().await;
+            match &inner.repository {
+                Some(r) if r.exists() => r.clone(),
+                _ => {
+                    log::info!("daemon: no repository configured; watcher idle");
+                    return;
+                }
             }
         };
         {

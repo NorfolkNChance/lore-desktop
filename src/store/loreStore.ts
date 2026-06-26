@@ -7,6 +7,7 @@
  */
 
 import { create } from "zustand";
+import { open } from "@tauri-apps/plugin-dialog";
 import * as lore from "@/api/lore";
 import type {
   Branch,
@@ -61,6 +62,8 @@ interface LoreState {
   createBranch: (name: string) => Promise<void>;
   syncRepo: () => Promise<void>;
   pushRepo: () => Promise<void>;
+  openRepository: () => Promise<void>;
+  cloneRepo: (url: string, path: string) => Promise<void>;
   setTab: (tab: SidebarTab) => void;
   selectFile: (path: string | null) => void;
   acquireLock: (path: string, reason?: string) => Promise<void>;
@@ -205,6 +208,36 @@ export const useLoreStore = create<LoreState>((set, get) => ({
     try {
       await lore.pushRepository();
       await get().refreshHistory();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  openRepository: async () => {
+    try {
+      const dir = await open({
+        directory: true,
+        title: "Open a Lore repository",
+      });
+      if (typeof dir === "string" && dir) {
+        set({ busy: "Opening repository…", selectedPath: null });
+        await lore.setRepository(dir);
+        await get().bootstrap();
+      }
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  cloneRepo: async (url, path) => {
+    set({ busy: "Cloning…", error: null, selectedPath: null });
+    try {
+      await lore.cloneRepository(url, path);
+      await get().bootstrap();
     } catch (e) {
       set({ error: String(e) });
     } finally {

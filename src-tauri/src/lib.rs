@@ -32,6 +32,7 @@ pub fn run() {
     let daemon = DaemonController::new(config);
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .manage(daemon)
         .invoke_handler(tauri::generate_handler![
@@ -60,6 +61,8 @@ pub fn run() {
             commands::sync_repository,
             commands::push_repository,
             commands::current_identity,
+            commands::set_repository,
+            commands::clone_repository,
         ])
         .setup(|app| {
             // Start the cross-platform watcher (no-op unless a repository is
