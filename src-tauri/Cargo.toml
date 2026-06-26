@@ -14,6 +14,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Only pulled in for the `liblore` feature: generates Rust bindings from lore.h.
+bindgen = { version = "0.69", optional = true }
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -35,10 +37,11 @@ blake3 = "1"
 notify = "6"
 
 [features]
-# When enabled (Phase 2), the backend binds to liblore instead of returning
-# the static mock data. Default build stays on mocks so the frontend can be
-# developed in isolation.
-liblore = []
+# Phase D: bind directly to liblore (in-process, structured, event-driven)
+# instead of shelling out to the `lore` CLI. Off by default — the default build
+# uses the CLI wrapper / mock. Enabling it requires the vendored shared library
+# (run `scripts/fetch-liblore.sh`) and pulls in bindgen to generate bindings.
+liblore = ["dep:bindgen"]
 
 # Aggressive local builds on the M3 Max: thin LTO + all codegen units in dev for
 # fast incremental compiles, full optimization for release artifacts.

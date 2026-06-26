@@ -59,7 +59,8 @@ pub async fn stop_service(
 pub async fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<Workspace>, String> {
     match state.backend().mode {
         ClientMode::Mock => Ok(vec![crate::mock::workspace()]),
-        ClientMode::Cli => {
+        // Both live backends derive the workspace from the real status.
+        ClientMode::Cli | ClientMode::Ffi => {
             let backend = state.backend();
             let status = backend.client.status().await.map_err(|e| e.to_string())?;
             let path = backend

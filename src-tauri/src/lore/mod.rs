@@ -10,6 +10,8 @@
 //! the captured output formats the parsers are tested against.
 
 pub mod cli;
+#[cfg(feature = "liblore")]
+pub mod ffi;
 pub mod mock;
 pub mod parse;
 
@@ -62,6 +64,8 @@ pub type LoreResult<T> = Result<T, LoreError>;
 pub enum ClientMode {
     /// Wrapping the real `lore` CLI against a live repository.
     Cli,
+    /// Binding directly to liblore in-process (Phase D).
+    Ffi,
     /// Static/stateful mock (no repository configured or `lore` not found).
     Mock,
 }
@@ -181,6 +185,17 @@ fn locate_binary() -> Option<PathBuf> {
 /// repository are configured; otherwise falls back to the stateful mock so the
 /// UI is always functional. Swapping in an FFI client later happens here.
 pub fn build_client(config: &LoreConfig) -> Box<dyn LoreClient> {
+    // Prefer the in-process liblore backend when built with `--features liblore`
+    // and a repository is configured.
+    #[cfg(feature = "liblore")]
+    {
+        if let Some(repository) = &config.repository {
+            if repository.exists() {
+                return Box::new(ffi::FfiLoreClient::new(repository.clone()));
+            }
+        }
+    }
+
     match (&config.binary, &config.repository) {
         (Some(binary), Some(repository)) if repository.exists() => {
             Box::new(cli::CliLoreClient::new(binary.clone(), repository.clone()))
