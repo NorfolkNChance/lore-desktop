@@ -284,7 +284,7 @@ export interface LoreEvent {
 }
 
 /** Which backend is serving data. Mirrors Rust `ClientMode`. */
-export type ClientMode = "cli" | "mock";
+export type ClientMode = "cli" | "ffi" | "mock";
 
 /** Result of a streaming ingest (Phase 4). Mirrors Rust `IngestSummary`. */
 export interface IngestSummary {

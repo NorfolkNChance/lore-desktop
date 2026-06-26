@@ -20,7 +20,13 @@ export function Toolbar() {
   } = useLoreStore();
   const ws = workspaces[0];
   const branch = status?.branch;
-  const isCli = backendMode === "cli";
+  const isLive = backendMode === "cli" || backendMode === "ffi";
+  const backendLabel =
+    backendMode === "ffi"
+      ? "live · liblore"
+      : backendMode === "cli"
+        ? "live · lore CLI"
+        : "mock data";
 
   return (
     <header className="flex h-13 items-stretch border-b border-line bg-subtle">
@@ -40,7 +46,7 @@ export function Toolbar() {
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => syncRepo()}
-            disabled={!isCli || !!busy}
+            disabled={!isLive || !!busy}
             title="Sync (lore sync)"
             className="flex items-center gap-1 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] hover:bg-inset disabled:opacity-50"
           >
@@ -48,7 +54,7 @@ export function Toolbar() {
           </button>
           <button
             onClick={() => pushRepo()}
-            disabled={!isCli || !!busy}
+            disabled={!isLive || !!busy}
             title="Push origin (lore push)"
             className="flex items-center gap-1 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] hover:bg-inset disabled:opacity-50"
           >
@@ -67,12 +73,12 @@ export function Toolbar() {
         <span
           title={loreVersion ?? undefined}
           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            isCli
+            isLive
               ? "bg-success-subtle text-success"
               : "bg-attention-subtle text-attention"
           }`}
         >
-          {isCli ? "live · lore CLI" : "mock data"}
+          {backendLabel}
         </span>
         <span
           className="flex items-center gap-1.5 text-[11px] text-muted"

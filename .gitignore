@@ -15,3 +15,9 @@ src-tauri/gen/
 .DS_Store
 .idea/
 *.swp
+
+# liblore shared library (fetched, not committed — see scripts/fetch-liblore.sh)
+src-tauri/vendor/liblore/*.dylib
+src-tauri/vendor/liblore/*.so
+src-tauri/vendor/liblore/*.dll
+src-tauri/vendor/liblore/*.lib
