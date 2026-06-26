@@ -40,3 +40,7 @@ The backend defaults to **mock data**. A `liblore` cargo feature is reserved for
 - **Phase 2** — Rust ↔ Lore integration (liblore FFI vs. CLI), daemon lifecycle controller (`lore service`), binary lock manager.
 - **Phase 3** — Full binary-first React UI, event-driven live state.
 - **Phase 4** — Native binary diff tool hooks, memory-efficient multi-GB streaming.
+- **Phase 5** — Security hardening (defense-in-depth; no known exploitable issue today, single-user/local-trust model):
+  - **Enable a Content-Security-Policy.** Replace `app.security.csp: null` in [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json) with a strict policy (bundled assets only) so any future injected content can't reach the IPC bridge.
+  - **Validate path & URL inputs at the backend boundary.** In the IPC command layer ([`src-tauri/src/commands.rs`](src-tauri/src/commands.rs)) normalize caller-supplied paths against the repository root (reject `..`/absolute escapes in `launch_asset_diff` / `stream_ingest_file`) and terminate `lore clone` option parsing with `--` to prevent a leading-`-` URL/path being read as a flag.
+  - **Harden the asset-diff temp file.** Replace the predictable `temp_dir().join(...)` snapshot in `launch_asset_diff` with a `tempfile`-created path to avoid symlink-follow on shared hosts.
