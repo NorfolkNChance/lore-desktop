@@ -49,12 +49,6 @@ impl FfiLoreClient {
     }
 }
 
-fn pending(op: &str) -> LoreError {
-    LoreError::Cli(format!(
-        "liblore FFI: `{op}` not yet implemented — build without `--features liblore` for the full CLI-backed client"
-    ))
-}
-
 // Event tag values (bindgen prefixes C enum variants with the enum type name).
 const EV_ERROR: u32 = sys::lore_event_id_t_LORE_EVENT_ERROR as u32;
 const EV_COMPLETE: u32 = sys::lore_event_id_t_LORE_EVENT_COMPLETE as u32;
@@ -64,6 +58,29 @@ const EV_AUTH_USER_INFO: u32 = sys::lore_event_id_t_LORE_EVENT_AUTH_USER_INFO as
 const EV_STATUS_FILE: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_FILE as u32;
 const EV_STATUS_REVISION: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_REVISION as u32;
 const EV_LOCK_QUERY: u32 = sys::lore_event_id_t_LORE_EVENT_LOCK_FILE_QUERY as u32;
+const EV_HISTORY_ENTRY: u32 = sys::lore_event_id_t_LORE_EVENT_REVISION_HISTORY_ENTRY as u32;
+
+/// Borrow a `&str` as a `lore_string_t` (ptr + len). The source must outlive
+/// the returned value (and any FFI call using it).
+fn lstr(s: &str) -> sys::lore_string_t {
+    sys::lore_string_t {
+        string: s.as_ptr() as *const std::os::raw::c_char,
+        length: s.len(),
+    }
+}
+
+/// Run an action-style op (no per-entry data, only success/error). Returns Ok
+/// on `COMPLETE { status: 0 }`, else the `ERROR`/status message.
+fn ffi_action<C>(op: &str, call: C) -> LoreResult<()>
+where
+    C: FnOnce(sys::lore_event_callback_config_t) -> i32,
+{
+    let mut outcome = OpOutcome::default();
+    let rc = run_event_op(call, |event| unsafe {
+        let _ = outcome.absorb(event);
+    });
+    outcome.into_result(rc, op)
+}
 
 // lore_file_action_t values.
 const ACTION_ADD: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_ADD as u32;
@@ -429,6 +446,172 @@ fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
     Ok(locks)
 }
 
+fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let mut args: sys::lore_revision_history_args_t = unsafe { std::mem::zeroed() };
+    args.length = limit.unwrap_or(0);
+
+    let mut revs: Vec<Revision> = Vec::new();
+    let mut outcome = OpOutcome::default();
+    let rc = run_event_op(
+        |cfg| unsafe { sys::lore_revision_history(&globals, &args, cfg) },
+        |event| unsafe {
+            if outcome.absorb(event) {
+                return;
+            }
+            if event.tag == EV_HISTORY_ENTRY {
+                let h = &event.__bindgen_anon_1.revision_history_entry;
+                // Parents: non-zero hashes (second is the merge parent).
+                let parents: Vec<String> = h
+                    .parent
+                    .iter()
+                    .filter(|p| p.data.iter().any(|&b| b != 0))
+                    .map(hash_to_hex)
+                    .collect();
+                let is_merge = parents.len() == 2;
+                revs.push(Revision {
+                    id: hash_to_hex(&h.revision),
+                    parents,
+                    // The history entry event carries no message/date; those
+                    // arrive via metadata events (not yet mapped).
+                    message: format!("revision {}", h.revision_number),
+                    author: Author { name: String::new(), email: String::new() },
+                    timestamp: String::new(),
+                    tree_root: FragmentAddress { hash: String::new(), context: String::new() },
+                    is_merge,
+                });
+            }
+        },
+    );
+    outcome.into_result(rc, "revision_history")?;
+    Ok(revs)
+}
+
+fn ffi_branch_switch(repo: &Path, name: &str) -> LoreResult<()> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let mut args: sys::lore_branch_switch_args_t = unsafe { std::mem::zeroed() };
+    args.branch = lstr(name);
+    ffi_action("branch_switch", |cfg| unsafe {
+        sys::lore_branch_switch(&globals, &args, cfg)
+    })
+}
+
+fn ffi_branch_create(repo: &Path, name: &str) -> LoreResult<()> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let mut args: sys::lore_branch_create_args_t = unsafe { std::mem::zeroed() };
+    args.branch = lstr(name);
+    ffi_action("branch_create", |cfg| unsafe {
+        sys::lore_branch_create(&globals, &args, cfg)
+    })
+}
+
+fn ffi_sync(repo: &Path, revision: Option<&str>) -> LoreResult<()> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, false); // sync talks to the remote
+    let mut args: sys::lore_revision_sync_args_t = unsafe { std::mem::zeroed() };
+    if let Some(rev) = revision {
+        args.revision = lstr(rev);
+    }
+    ffi_action("revision_sync", |cfg| unsafe {
+        sys::lore_revision_sync(&globals, &args, cfg)
+    })
+}
+
+fn ffi_push(repo: &Path, branch: Option<&str>) -> LoreResult<()> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, false); // push talks to the remote
+    let mut args: sys::lore_branch_push_args_t = unsafe { std::mem::zeroed() };
+    if let Some(b) = branch {
+        args.branch = lstr(b);
+    }
+    ffi_action("branch_push", |cfg| unsafe {
+        sys::lore_branch_push(&globals, &args, cfg)
+    })
+}
+
+fn ffi_stage(repo: &Path, paths: &[String]) -> LoreResult<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let lstrings: Vec<sys::lore_string_t> = paths.iter().map(|p| lstr(p)).collect();
+    let mut args: sys::lore_file_stage_args_t = unsafe { std::mem::zeroed() };
+    args.paths = sys::lore_string_array_t { ptr: lstrings.as_ptr(), count: lstrings.len() };
+    ffi_action("file_stage", |cfg| unsafe {
+        sys::lore_file_stage(&globals, &args, cfg)
+    })
+}
+
+fn ffi_unstage(repo: &Path, paths: &[String]) -> LoreResult<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true);
+    let lstrings: Vec<sys::lore_string_t> = paths.iter().map(|p| lstr(p)).collect();
+    let mut args: sys::lore_file_unstage_args_t = unsafe { std::mem::zeroed() };
+    args.paths = sys::lore_string_array_t { ptr: lstrings.as_ptr(), count: lstrings.len() };
+    ffi_action("file_unstage", |cfg| unsafe {
+        sys::lore_file_unstage(&globals, &args, cfg)
+    })
+}
+
+fn ffi_commit(repo: &Path, message: &str) -> LoreResult<String> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, true); // commit creates a local revision
+    let mut args: sys::lore_revision_commit_args_t = unsafe { std::mem::zeroed() };
+    args.message = lstr(message);
+    ffi_action("revision_commit", |cfg| unsafe {
+        sys::lore_revision_commit(&globals, &args, cfg)
+    })?;
+    Ok("committed".to_string())
+}
+
+fn ffi_acquire_lock(repo: &Path, path: &str, reason: Option<String>) -> LoreResult<Lock> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, false); // locks are server-side
+    let one = [lstr(path)];
+    let mut args: sys::lore_lock_file_acquire_args_t = unsafe { std::mem::zeroed() };
+    args.paths = sys::lore_string_array_t { ptr: one.as_ptr(), count: 1 };
+    ffi_action("lock_file_acquire", |cfg| unsafe {
+        sys::lore_lock_file_acquire(&globals, &args, cfg)
+    })?;
+    Ok(Lock {
+        path: path.to_string(),
+        state: LockState::LockedByMe,
+        owner: None,
+        instance_id: None,
+        acquired_at: Some(chrono::Utc::now().to_rfc3339()),
+        reason,
+    })
+}
+
+fn ffi_release_lock(repo: &Path, path: &str) -> LoreResult<()> {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, false);
+    let one = [lstr(path)];
+    let mut args: sys::lore_lock_file_release_args_t = unsafe { std::mem::zeroed() };
+    args.paths = sys::lore_string_array_t { ptr: one.as_ptr(), count: 1 };
+    ffi_action("lock_file_release", |cfg| unsafe {
+        sys::lore_lock_file_release(&globals, &args, cfg)
+    })
+}
+
+/// Run an FFI op on the blocking pool (liblore calls are synchronous).
+async fn blocking<T, F>(f: F) -> LoreResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> LoreResult<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| LoreError::Io(e.to_string()))?
+}
+
 #[async_trait]
 impl LoreClient for FfiLoreClient {
     fn mode(&self) -> ClientMode {
@@ -497,55 +680,76 @@ impl LoreClient for FfiLoreClient {
         .map_err(|e| LoreError::Io(e.to_string()))?
     }
 
-    async fn lock_status(&self, _path: &str) -> LoreResult<LockState> {
-        Err(pending("lock_status"))
+    async fn lock_status(&self, path: &str) -> LoreResult<LockState> {
+        let target = path.to_string();
+        let locks = self.query_locks().await?;
+        Ok(locks
+            .into_iter()
+            .find(|l| l.path == target)
+            .map(|l| l.state)
+            .unwrap_or(LockState::Unlocked))
     }
 
-    async fn acquire_lock(&self, _path: &str, _reason: Option<String>) -> LoreResult<Lock> {
-        Err(pending("acquire_lock"))
+    async fn acquire_lock(&self, path: &str, reason: Option<String>) -> LoreResult<Lock> {
+        let repo = self.repository.clone();
+        let path = path.to_string();
+        blocking(move || ffi_acquire_lock(&repo, &path, reason)).await
     }
 
-    async fn release_lock(&self, _path: &str) -> LoreResult<()> {
-        Err(pending("release_lock"))
+    async fn release_lock(&self, path: &str) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        let path = path.to_string();
+        blocking(move || ffi_release_lock(&repo, &path)).await
     }
 
-    async fn stage(&self, _paths: &[String]) -> LoreResult<()> {
-        Err(pending("stage"))
+    async fn stage(&self, paths: &[String]) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        let paths = paths.to_vec();
+        blocking(move || ffi_stage(&repo, &paths)).await
     }
 
-    async fn unstage(&self, _paths: &[String]) -> LoreResult<()> {
-        Err(pending("unstage"))
+    async fn unstage(&self, paths: &[String]) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        let paths = paths.to_vec();
+        blocking(move || ffi_unstage(&repo, &paths)).await
     }
 
-    async fn commit(&self, _message: &str) -> LoreResult<String> {
-        Err(pending("commit"))
+    async fn commit(&self, message: &str) -> LoreResult<String> {
+        let repo = self.repository.clone();
+        let message = message.to_string();
+        blocking(move || ffi_commit(&repo, &message)).await
     }
 
     async fn list_branches(&self) -> LoreResult<Vec<Branch>> {
         let repo = self.repository.clone();
-        tokio::task::spawn_blocking(move || ffi_list_branches(&repo))
-            .await
-            .map_err(|e| LoreError::Io(e.to_string()))?
+        blocking(move || ffi_list_branches(&repo)).await
     }
 
-    async fn switch_branch(&self, _name: &str) -> LoreResult<()> {
-        Err(pending("switch_branch"))
+    async fn switch_branch(&self, name: &str) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        let name = name.to_string();
+        blocking(move || ffi_branch_switch(&repo, &name)).await
     }
 
-    async fn create_branch(&self, _name: &str) -> LoreResult<()> {
-        Err(pending("create_branch"))
+    async fn create_branch(&self, name: &str) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        let name = name.to_string();
+        blocking(move || ffi_branch_create(&repo, &name)).await
     }
 
-    async fn history(&self, _limit: Option<u32>) -> LoreResult<Vec<Revision>> {
-        Err(pending("history"))
+    async fn history(&self, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
+        let repo = self.repository.clone();
+        blocking(move || ffi_history(&repo, limit)).await
     }
 
-    async fn sync(&self, _revision: Option<String>) -> LoreResult<()> {
-        Err(pending("sync"))
+    async fn sync(&self, revision: Option<String>) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        blocking(move || ffi_sync(&repo, revision.as_deref())).await
     }
 
-    async fn push(&self, _branch: Option<String>) -> LoreResult<()> {
-        Err(pending("push"))
+    async fn push(&self, branch: Option<String>) -> LoreResult<()> {
+        let repo = self.repository.clone();
+        blocking(move || ffi_push(&repo, branch.as_deref())).await
     }
 
     async fn current_identity(&self) -> LoreResult<Identity> {
@@ -596,5 +800,17 @@ mod tests {
         }
         assert_eq!(status.branch.name, "main");
         assert!(!status.head_revision.id.is_empty(), "expected a head revision");
+    }
+
+    #[test]
+    #[ignore]
+    fn ffi_history_against_live_repo() {
+        let repo = std::env::var("LORE_TEST_REPO").unwrap_or_else(|_| "/tmp/lore-wf".into());
+        let revs = ffi_history(Path::new(&repo), Some(50)).expect("history");
+        eprintln!("FFI history: {} revisions", revs.len());
+        for r in &revs {
+            eprintln!("  {} {}", &r.id[..r.id.len().min(10)], r.message);
+        }
+        assert!(!revs.is_empty(), "expected at least one revision");
     }
 }
