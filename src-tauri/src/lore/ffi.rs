@@ -498,12 +498,16 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
                             "message" if m.value.tag == META_STRING => {
                                 rev.message = lore_string(&m.value.__bindgen_anon_1.string);
                             }
+                            // liblore reports the commit time as Unix milliseconds.
                             "timestamp" if m.value.tag == META_NUMERIC => {
-                                let secs = m.value.__bindgen_anon_1.numeric as i64;
-                                if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                                let millis = m.value.__bindgen_anon_1.numeric as i64;
+                                if let Some(dt) = chrono::DateTime::from_timestamp_millis(millis) {
                                     rev.timestamp = dt.to_rfc3339();
                                 }
                             }
+                            // `lore_revision_history` only emits branch/timestamp/
+                            // message — author isn't carried here (kept for the
+                            // day a future key appears).
                             "author" | "creator" if m.value.tag == META_STRING => {
                                 rev.author.name = lore_string(&m.value.__bindgen_anon_1.string);
                             }
@@ -629,6 +633,20 @@ fn ffi_release_lock(repo: &Path, path: &str) -> LoreResult<()> {
     args.paths = sys::lore_string_array_t { ptr: one.as_ptr(), count: 1 };
     ffi_action("lock_file_release", |cfg| unsafe {
         sys::lore_lock_file_release(&globals, &args, cfg)
+    })
+}
+
+/// Clone a remote repository into `dest` (`lore_repository_clone`). Standalone
+/// (not bound to an existing client) so the command layer can call it directly
+/// for an FFI-native clone.
+pub fn clone(url: &str, dest: &Path) -> LoreResult<()> {
+    let dest_c = path_cstring(dest);
+    // The destination is the repository path; clone needs the remote (online).
+    let globals = make_globals(&dest_c, false);
+    let mut args: sys::lore_repository_clone_args_t = unsafe { std::mem::zeroed() };
+    args.repository_url = lstr(url);
+    ffi_action("repository_clone", |cfg| unsafe {
+        sys::lore_repository_clone(&globals, &args, cfg)
     })
 }
 
@@ -840,8 +858,13 @@ mod tests {
         let revs = ffi_history(Path::new(&repo), Some(50)).expect("history");
         eprintln!("FFI history: {} revisions", revs.len());
         for r in &revs {
-            eprintln!("  {} {}", &r.id[..r.id.len().min(10)], r.message);
+            eprintln!("  {} [{}] {}", &r.id[..r.id.len().min(10)], r.timestamp, r.message);
         }
         assert!(!revs.is_empty(), "expected at least one revision");
+        assert!(
+            revs[0].timestamp.starts_with("202"),
+            "expected an ISO timestamp, got {:?}",
+            revs[0].timestamp
+        );
     }
 }

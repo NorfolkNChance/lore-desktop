@@ -283,20 +283,36 @@ pub async fn clone_repository(
     url: String,
     path: String,
 ) -> Result<ClientMode, String> {
-    let binary = state
-        .binary()
-        .ok_or_else(|| "lore binary not found; cannot clone".to_string())?;
-    let output = tokio::process::Command::new(&binary)
-        .arg("--non-interactive")
-        .args(["clone", &url, &path])
-        .output()
-        .await
-        .map_err(|e| format!("failed to run lore clone: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("clone failed: {}", stderr.trim()));
-    }
     let dest = std::path::PathBuf::from(&path);
+
+    // FFI-native clone when built with `--features liblore`; otherwise shell out
+    // to the `lore` binary. Both create the repository at `path`.
+    #[cfg(feature = "liblore")]
+    {
+        let url = url.clone();
+        let dest = dest.clone();
+        tokio::task::spawn_blocking(move || crate::lore::ffi::clone(&url, &dest))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(feature = "liblore"))]
+    {
+        let binary = state
+            .binary()
+            .ok_or_else(|| "lore binary not found; cannot clone".to_string())?;
+        let output = tokio::process::Command::new(&binary)
+            .arg("--non-interactive")
+            .args(["clone", &url, &path])
+            .output()
+            .await
+            .map_err(|e| format!("failed to run lore clone: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("clone failed: {}", stderr.trim()));
+        }
+    }
+
     let backend = state.set_repository(dest.clone());
     daemon.restart(&app, dest).await;
     emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "cloned": url }));
