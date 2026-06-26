@@ -20,12 +20,12 @@ const LORE_EVENT_CHANNEL: &str = "lore://event";
 /// Which backend is active, so the UI can show a "mock data" banner.
 #[tauri::command]
 pub fn backend_mode(state: State<'_, AppState>) -> ClientMode {
-    state.mode
+    state.backend().mode
 }
 
 #[tauri::command]
 pub async fn lore_version(state: State<'_, AppState>) -> Result<String, String> {
-    state.client.version().await.map_err(|e| e.to_string())
+    state.backend().client.version().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -57,17 +57,18 @@ pub async fn stop_service(
 
 #[tauri::command]
 pub async fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<Workspace>, String> {
-    match state.mode {
+    match state.backend().mode {
         ClientMode::Mock => Ok(vec![crate::mock::workspace()]),
         // Both live backends derive the workspace from the real status.
         ClientMode::Cli | ClientMode::Ffi => {
-            let status = state.client.status().await.map_err(|e| e.to_string())?;
-            let path = state
+            let backend = state.backend();
+            let status = backend.client.status().await.map_err(|e| e.to_string())?;
+            let path = backend
                 .repository
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            let name = state
+            let name = backend
                 .repository
                 .as_ref()
                 .and_then(|p| p.file_name())
@@ -93,12 +94,12 @@ pub async fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<Workspace
 pub async fn get_workspace_status(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceStatus, String> {
-    state.client.status().await.map_err(|e| e.to_string())
+    state.backend().client.status().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn list_branches(state: State<'_, AppState>) -> Result<Vec<Branch>, String> {
-    state.client.list_branches().await.map_err(|e| e.to_string())
+    state.backend().client.list_branches().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -106,7 +107,7 @@ pub async fn list_revisions(
     state: State<'_, AppState>,
     limit: Option<u32>,
 ) -> Result<Vec<Revision>, String> {
-    state.client.history(limit).await.map_err(|e| e.to_string())
+    state.backend().client.history(limit).await.map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ pub async fn switch_branch(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<(), String> {
-    state.client.switch_branch(&name).await.map_err(|e| e.to_string())?;
+    state.backend().client.switch_branch(&name).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "branch": name }));
     Ok(())
 }
@@ -130,7 +131,7 @@ pub async fn create_branch(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<(), String> {
-    state.client.create_branch(&name).await.map_err(|e| e.to_string())?;
+    state.backend().client.create_branch(&name).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::BranchSwitched, serde_json::json!({ "created": name }));
     Ok(())
 }
@@ -141,7 +142,7 @@ pub async fn sync_repository(
     state: State<'_, AppState>,
     revision: Option<String>,
 ) -> Result<(), String> {
-    state.client.sync(revision).await.map_err(|e| e.to_string())?;
+    state.backend().client.sync(revision).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "synced": true }));
     Ok(())
 }
@@ -152,19 +153,19 @@ pub async fn push_repository(
     state: State<'_, AppState>,
     branch: Option<String>,
 ) -> Result<(), String> {
-    state.client.push(branch).await.map_err(|e| e.to_string())?;
+    state.backend().client.push(branch).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "pushed": true }));
     Ok(())
 }
 
 #[tauri::command]
 pub async fn current_identity(state: State<'_, AppState>) -> Result<Identity, String> {
-    state.client.current_identity().await.map_err(|e| e.to_string())
+    state.backend().client.current_identity().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn list_locks(state: State<'_, AppState>) -> Result<Vec<Lock>, String> {
-    state.locks.list().await
+    state.backend().locks.list().await
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +179,7 @@ pub async fn acquire_lock(
     path: String,
     reason: Option<String>,
 ) -> Result<Lock, String> {
-    state.locks.acquire(&app, &path, reason).await
+    state.backend().locks.acquire(&app, &path, reason).await
 }
 
 #[tauri::command]
@@ -187,7 +188,7 @@ pub async fn release_lock(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<(), String> {
-    state.locks.release(&app, &path).await
+    state.backend().locks.release(&app, &path).await
 }
 
 #[tauri::command]
@@ -195,7 +196,7 @@ pub async fn lock_status(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<LockState, String> {
-    state.locks.status(&path).await
+    state.backend().locks.status(&path).await
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +209,7 @@ pub async fn stage_files(
     state: State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    state.client.stage(&paths).await.map_err(|e| e.to_string())?;
+    state.backend().client.stage(&paths).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "staged": paths }));
     Ok(())
 }
@@ -219,7 +220,7 @@ pub async fn unstage_files(
     state: State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    state.client.unstage(&paths).await.map_err(|e| e.to_string())?;
+    state.backend().client.unstage(&paths).await.map_err(|e| e.to_string())?;
     emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "unstaged": paths }));
     Ok(())
 }
@@ -230,7 +231,7 @@ pub async fn commit(
     state: State<'_, AppState>,
     message: String,
 ) -> Result<String, String> {
-    let result = state.client.commit(&message).await.map_err(|e| e.to_string())?;
+    let result = state.backend().client.commit(&message).await.map_err(|e| e.to_string())?;
     emit(
         &app,
         LoreEventTag::RevisionCommitted,
@@ -247,6 +248,59 @@ fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
         payload: Some(payload),
     };
     let _ = app.emit(LORE_EVENT_CHANNEL, event);
+}
+
+// ---------------------------------------------------------------------------
+// Repository management (A4): open / clone at runtime
+// ---------------------------------------------------------------------------
+
+/// Switch the active backend to an existing repository on disk, rebuilding the
+/// client and re-pointing the watcher. The frontend re-bootstraps afterwards.
+#[tauri::command]
+pub async fn set_repository(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    daemon: State<'_, DaemonController>,
+    path: String,
+) -> Result<ClientMode, String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+    let backend = state.set_repository(p.clone());
+    daemon.restart(&app, p).await;
+    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "repository": path }));
+    Ok(backend.mode)
+}
+
+/// Clone a remote repository into `path` (`lore clone <url> <path>`), then make
+/// it the active repository.
+#[tauri::command]
+pub async fn clone_repository(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    daemon: State<'_, DaemonController>,
+    url: String,
+    path: String,
+) -> Result<ClientMode, String> {
+    let binary = state
+        .binary()
+        .ok_or_else(|| "lore binary not found; cannot clone".to_string())?;
+    let output = tokio::process::Command::new(&binary)
+        .arg("--non-interactive")
+        .args(["clone", &url, &path])
+        .output()
+        .await
+        .map_err(|e| format!("failed to run lore clone: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("clone failed: {}", stderr.trim()));
+    }
+    let dest = std::path::PathBuf::from(&path);
+    let backend = state.set_repository(dest.clone());
+    daemon.restart(&app, dest).await;
+    emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "cloned": url }));
+    Ok(backend.mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +350,8 @@ pub fn launch_asset_diff(
     path: String,
     tool_id: Option<String>,
 ) -> Result<crate::diff_tools::DiffToolInfo, String> {
-    let repo = state
+    let backend = state.backend();
+    let repo = backend
         .repository
         .as_ref()
         .ok_or_else(|| "no repository on disk (mock backend) — use the diff hook directly".to_string())?;

@@ -19,6 +19,8 @@ bindgen = { version = "0.69", optional = true }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Native folder/file picker for "Open repository…" (A4).
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Async runtime for the daemon controller / streaming (Phases 2 & 4).

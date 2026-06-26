@@ -30,13 +30,9 @@ export function Toolbar() {
 
   return (
     <header className="flex h-13 items-stretch border-b border-line bg-subtle">
-      <Segment className="min-w-48 flex-1">
-        <div className="text-[11px] text-muted">Current repository</div>
-        <div className="flex items-center gap-1.5 font-medium">
-          <span aria-hidden>▸</span>
-          <span className="truncate">{ws?.name ?? "—"}</span>
-        </div>
-      </Segment>
+      <div className="min-w-48 flex-1">
+        <RepoMenu name={ws?.name} path={ws?.path} />
+      </div>
 
       <div className="min-w-44 flex-1 border-l border-line">
         <BranchMenu currentName={branch?.name} protectedBranch={branch?.protected} />
@@ -167,6 +163,60 @@ function BranchMenu({
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-accent hover:bg-subtle"
             >
               <span aria-hidden>+</span> New branch…
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RepoMenu({ name, path }: { name?: string; path?: string }) {
+  const { openRepository, cloneRepo } = useLoreStore();
+  const [open, setOpen] = useState(false);
+
+  const onClone = async () => {
+    setOpen(false);
+    const url = window.prompt("Remote repository URL (lore://host/name):");
+    if (!url || !url.trim()) return;
+    const dest = window.prompt("Clone into local path:");
+    if (!dest || !dest.trim()) return;
+    await cloneRepo(url.trim(), dest.trim());
+  };
+
+  return (
+    <div className="relative h-full">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title={path}
+        className="flex h-full w-full flex-col justify-center px-4 py-2 text-left hover:bg-inset"
+      >
+        <span className="text-[11px] text-muted">Current repository</span>
+        <span className="flex items-center gap-1.5 font-medium">
+          <span aria-hidden>▸</span>
+          <span className="truncate">{name ?? "—"}</span>
+          <span className="text-faint">▾</span>
+        </span>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-2 top-full z-20 mt-1 w-56 rounded-md border border-line bg-canvas py-1 shadow-lg">
+            <button
+              onClick={() => {
+                setOpen(false);
+                void openRepository();
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-subtle"
+            >
+              <span aria-hidden>📂</span> Open repository…
+            </button>
+            <button
+              onClick={onClone}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-subtle"
+            >
+              <span aria-hidden>⎙</span> Clone…
             </button>
           </div>
         </>

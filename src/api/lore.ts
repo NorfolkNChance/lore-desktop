@@ -52,6 +52,18 @@ export const currentIdentity = (): Promise<Identity> =>
   invoke("current_identity");
 
 // ---------------------------------------------------------------------------
+// Repository management (open / clone at runtime)
+// ---------------------------------------------------------------------------
+
+export const setRepository = (path: string): Promise<ClientMode> =>
+  invoke("set_repository", { path });
+
+export const cloneRepository = (
+  url: string,
+  path: string,
+): Promise<ClientMode> => invoke("clone_repository", { url, path });
+
+// ---------------------------------------------------------------------------
 // VCS workflow (branches, sync, push)
 // ---------------------------------------------------------------------------
 
