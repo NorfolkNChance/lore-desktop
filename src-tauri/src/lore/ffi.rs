@@ -59,6 +59,9 @@ const EV_STATUS_FILE: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_FI
 const EV_STATUS_REVISION: u32 = sys::lore_event_id_t_LORE_EVENT_REPOSITORY_STATUS_REVISION as u32;
 const EV_LOCK_QUERY: u32 = sys::lore_event_id_t_LORE_EVENT_LOCK_FILE_QUERY as u32;
 const EV_HISTORY_ENTRY: u32 = sys::lore_event_id_t_LORE_EVENT_REVISION_HISTORY_ENTRY as u32;
+const EV_METADATA: u32 = sys::lore_event_id_t_LORE_EVENT_METADATA as u32;
+const META_STRING: u32 = sys::lore_metadata_tag_t_LORE_METADATA_STRING as u32;
+const META_NUMERIC: u32 = sys::lore_metadata_tag_t_LORE_METADATA_NUMERIC as u32;
 
 /// Borrow a `&str` as a `lore_string_t` (ptr + len). The source must outlive
 /// the returned value (and any FFI call using it).
@@ -460,27 +463,55 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
             if outcome.absorb(event) {
                 return;
             }
-            if event.tag == EV_HISTORY_ENTRY {
-                let h = &event.__bindgen_anon_1.revision_history_entry;
-                // Parents: non-zero hashes (second is the merge parent).
-                let parents: Vec<String> = h
-                    .parent
-                    .iter()
-                    .filter(|p| p.data.iter().any(|&b| b != 0))
-                    .map(hash_to_hex)
-                    .collect();
-                let is_merge = parents.len() == 2;
-                revs.push(Revision {
-                    id: hash_to_hex(&h.revision),
-                    parents,
-                    // The history entry event carries no message/date; those
-                    // arrive via metadata events (not yet mapped).
-                    message: format!("revision {}", h.revision_number),
-                    author: Author { name: String::new(), email: String::new() },
-                    timestamp: String::new(),
-                    tree_root: FragmentAddress { hash: String::new(), context: String::new() },
-                    is_merge,
-                });
+            match event.tag {
+                t if t == EV_HISTORY_ENTRY => {
+                    let h = &event.__bindgen_anon_1.revision_history_entry;
+                    // Parents: non-zero hashes (the second is a merge parent).
+                    let parents: Vec<String> = h
+                        .parent
+                        .iter()
+                        .filter(|p| p.data.iter().any(|&b| b != 0))
+                        .map(hash_to_hex)
+                        .collect();
+                    let is_merge = parents.len() == 2;
+                    revs.push(Revision {
+                        id: hash_to_hex(&h.revision),
+                        parents,
+                        // Filled by the METADATA events that follow this entry.
+                        message: String::new(),
+                        author: Author { name: String::new(), email: String::new() },
+                        timestamp: String::new(),
+                        tree_root: FragmentAddress {
+                            hash: String::new(),
+                            context: String::new(),
+                        },
+                        is_merge,
+                    });
+                }
+                // liblore emits the message/timestamp/author as METADATA events
+                // immediately after each history entry.
+                t if t == EV_METADATA => {
+                    if let Some(rev) = revs.last_mut() {
+                        let m = &event.__bindgen_anon_1.metadata;
+                        let key = lore_string(&m.key);
+                        match key.as_str() {
+                            "message" if m.value.tag == META_STRING => {
+                                rev.message = lore_string(&m.value.__bindgen_anon_1.string);
+                            }
+                            "timestamp" if m.value.tag == META_NUMERIC => {
+                                let secs = m.value.__bindgen_anon_1.numeric as i64;
+                                if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                                    rev.timestamp = dt.to_rfc3339();
+                                }
+                            }
+                            "author" | "creator" if m.value.tag == META_STRING => {
+                                rev.author.name = lore_string(&m.value.__bindgen_anon_1.string);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
         },
     );
