@@ -39,6 +39,7 @@ export type { WorkspaceStatus } from "./bindings/WorkspaceStatus";
 export type { ServiceState } from "./bindings/ServiceState";
 export type { LoreLogLevel } from "./bindings/LoreLogLevel";
 export type { TransferProgress } from "./bindings/TransferProgress";
+export type { BackendInfo } from "./bindings/BackendInfo";
 export type { ClientMode } from "./bindings/ClientMode";
 export type { DiffTool } from "./bindings/DiffTool";
 export type { IngestSummary } from "./bindings/IngestSummary";

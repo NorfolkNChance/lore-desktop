@@ -250,6 +250,22 @@ pub struct WorkspaceStatus {
     pub locks_available: bool,
 }
 
+/// The active backend's identity for the toolbar badge: mode, version, and —
+/// for the CLI backend — whether the binary is inside the version range the
+/// text parsers were captured against.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendInfo {
+    pub mode: crate::lore::ClientMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub version: Option<String>,
+    /// Present when CLI output parsing may be unreliable (untested version).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub compat_warning: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Daemon events & service lifecycle
 // ---------------------------------------------------------------------------

@@ -6,6 +6,32 @@
 //! the `tests` module). When an FFI/native-crate backend lands, this whole file
 //! is deleted, not migrated.
 
+/// CLI versions this file's parsers were captured against. `lore` has no
+/// stable machine-readable output, so a newer CLI may reword its output and
+/// these parsers would return *empty* results rather than erroring — the UI
+/// would show "No local changes" against a dirty tree. When bumping: re-run
+/// the real binary, refresh the captured fixtures below, then extend this.
+pub const TESTED_CLI_VERSIONS: &[&str] = &["0.8."];
+
+/// A warning when `lore --version` output falls outside the tested range.
+/// `None` = compatible.
+pub fn compat_warning(version: &str) -> Option<String> {
+    // The version token is the first whitespace-separated word starting with
+    // a digit ("lore 0.8.3+201" → "0.8.3+201").
+    let semver = version
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    match semver {
+        Some(v) if TESTED_CLI_VERSIONS.iter().any(|p| v.starts_with(p)) => None,
+        // No parseable version is itself a compatibility smell.
+        _ => Some(format!(
+            "lore CLI {version:?} is outside the tested range ({}x) — \
+             status/lock/history output may parse incorrectly",
+            TESTED_CLI_VERSIONS.join("x, ")
+        )),
+    }
+}
+
 /// A line beginning with `[Error]` anywhere in stdout/stderr indicates failure.
 /// Returns the message after the marker, if present.
 pub fn parse_error(output: &str) -> Option<String> {
@@ -232,6 +258,20 @@ mod tests {
     use super::*;
 
     // Captured verbatim from `lore 0.8.3+201` on a live local repo.
+
+    #[test]
+    fn tested_cli_version_passes_the_compat_check() {
+        // Captured verbatim from the installed binary's `lore --version`.
+        assert_eq!(compat_warning("lore 0.8.3+201"), None);
+        assert_eq!(compat_warning("lore 0.8.0"), None);
+    }
+
+    #[test]
+    fn untested_or_unparseable_versions_warn() {
+        for v in ["lore 0.9.0", "lore 1.0.8.1", "lore 10.8.1", "weird output"] {
+            assert!(compat_warning(v).is_some(), "{v} should warn");
+        }
+    }
 
     #[test]
     fn parses_error_marker() {

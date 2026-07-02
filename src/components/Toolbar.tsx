@@ -13,6 +13,7 @@ export function Toolbar() {
     identity,
     backendMode,
     loreVersion,
+    compatWarning,
     serviceState,
     busy,
     syncRepo,
@@ -67,14 +68,17 @@ export function Toolbar() {
           </span>
         )}
         <span
-          title={loreVersion ?? undefined}
+          title={compatWarning ?? loreVersion ?? undefined}
           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            isLive
+            // Amber when mock, or live on an untested CLI version (the
+            // tooltip carries the warning).
+            isLive && !compatWarning
               ? "bg-success-subtle text-success"
               : "bg-attention-subtle text-attention"
           }`}
         >
           {backendLabel}
+          {compatWarning && <span aria-hidden> ⚠</span>}
         </span>
         <span
           className="flex items-center gap-1.5 text-[11px] text-muted"

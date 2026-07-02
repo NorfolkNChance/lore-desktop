@@ -38,8 +38,7 @@ pub fn run() {
         .manage(app_state)
         .manage(daemon)
         .invoke_handler(tauri::generate_handler![
-            commands::backend_mode,
-            commands::lore_version,
+            commands::backend_info,
             commands::service_state,
             commands::start_service,
             commands::stop_service,
@@ -112,6 +111,7 @@ mod ts_bindings {
         crate::models::ServiceState::export_all(&cfg).unwrap();
         crate::models::LoreLogLevel::export_all(&cfg).unwrap();
         crate::models::TransferProgress::export_all(&cfg).unwrap();
+        crate::models::BackendInfo::export_all(&cfg).unwrap();
         crate::lore::ClientMode::export_all(&cfg).unwrap();
         crate::lore::LoreError::export_all(&cfg).unwrap();
         crate::diff_tools::DiffToolInfo::export_all(&cfg).unwrap();
