@@ -241,16 +241,6 @@ export interface WorkspaceStatus {
 // Daemon events (pushed from the Rust service over Tauri events)
 // ---------------------------------------------------------------------------
 
-/** Mirrors liblore's event tagging used by the SDKs. */
-export type LoreEventTag =
-  | "lockChanged"
-  | "statusChanged"
-  | "revisionCommitted"
-  | "branchSwitched"
-  | "serviceStateChanged"
-  | "transferProgress"
-  | "log";
-
 export type LoreLogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
 /** Lifecycle state of the local `lore service` daemon. */
@@ -273,15 +263,39 @@ export interface TransferProgress {
   fragmentsTotal: number;
 }
 
-/** A single event pushed from the daemon to the UI. */
-export interface LoreEvent {
-  tag: LoreEventTag;
+/**
+ * A single event pushed from the daemon to the UI. The payload is typed per
+ * tag — this union mirrors Rust `events::LoreEventKind` (its serialization is
+ * pinned by unit tests in `src-tauri/src/events.rs`), so consumers narrow on
+ * `tag` without casting.
+ */
+export type LoreEvent = {
   /** ISO-8601 UTC timestamp the event was emitted. */
   timestamp: string;
   level: LoreLogLevel;
-  /** Tag-specific payload; consumers narrow on `tag`. */
-  payload?: unknown;
-}
+} & (
+  | {
+      /** A lock changed on `path`, or a periodic re-query tick (fields absent). */
+      tag: "lockChanged";
+      payload: { path?: string; state?: LockState };
+    }
+  | {
+      /** The working tree changed; `source` says who noticed. */
+      tag: "statusChanged";
+      payload: { source: string };
+    }
+  | {
+      /** A revision landed (commit/push/clone); `message` for commits. */
+      tag: "revisionCommitted";
+      payload: { message?: string };
+    }
+  | { tag: "branchSwitched"; payload: { branch: string } }
+  | { tag: "serviceStateChanged"; payload: { state: ServiceState } }
+  | { tag: "transferProgress"; payload: TransferProgress }
+);
+
+/** The set of event tags, derived from the union. */
+export type LoreEventTag = LoreEvent["tag"];
 
 /** Which backend is serving data. Mirrors Rust `ClientMode`. */
 export type ClientMode = "cli" | "ffi" | "mock";

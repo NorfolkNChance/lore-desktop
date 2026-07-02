@@ -9,13 +9,12 @@
 //! Fixed-size chunking is used here for clarity; production Lore uses FastCDC
 //! (content-defined chunking) — see `ChunkingStrategy` in the contracts.
 
-use crate::models::{LoreEvent, LoreEventTag, LoreLogLevel};
+use crate::events::{emit, LoreEventKind};
+use crate::models::TransferProgress;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
-
-const LORE_EVENT_CHANNEL: &str = "lore://event";
 
 /// 4 MiB fixed chunk size. This is the upper bound on resident memory for the
 /// whole operation, independent of total file size.
@@ -164,20 +163,17 @@ fn emit_progress(
     frags_done: u32,
     frags_total: u32,
 ) {
-    let event = LoreEvent {
-        tag: LoreEventTag::TransferProgress,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        level: LoreLogLevel::Info,
-        payload: Some(serde_json::json!({
-            "operationId": op_id,
-            "label": label,
-            "bytesDone": bytes_done,
-            "bytesTotal": bytes_total,
-            "fragmentsDone": frags_done,
-            "fragmentsTotal": frags_total,
-        })),
-    };
-    let _ = app.emit(LORE_EVENT_CHANNEL, event);
+    emit(
+        app,
+        LoreEventKind::TransferProgress(TransferProgress {
+            operation_id: op_id.to_string(),
+            label: label.to_string(),
+            bytes_done,
+            bytes_total,
+            fragments_done: frags_done,
+            fragments_total: frags_total,
+        }),
+    );
 }
 
 #[cfg(test)]
