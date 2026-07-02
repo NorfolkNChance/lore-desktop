@@ -6,13 +6,14 @@
 //! them, in Phase 2 the liblore bindings will.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Content addressing
 // ---------------------------------------------------------------------------
 
 /// 48-byte fragment address: 32-byte BLAKE3 hash + 16-byte context tag.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FragmentAddress {
     /// Hex of the 32-byte BLAKE3 content hash.
@@ -21,23 +22,26 @@ pub struct FragmentAddress {
     pub context: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ChunkingStrategy {
     Fastcdc,
     Fixed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Fragment {
     pub address: FragmentAddress,
+    #[ts(type = "number")]
     pub size_bytes: u64,
     /// 16-byte opaque partition id (authorization boundary), hex.
     pub partition: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub chunking: Option<ChunkingStrategy>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
     pub offset: Option<u64>,
 }
 
@@ -45,14 +49,14 @@ pub struct Fragment {
 // History
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Author {
     pub name: String,
     pub email: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Revision {
     pub id: String,
@@ -64,7 +68,7 @@ pub struct Revision {
     pub is_merge: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
     pub id: String,
@@ -77,7 +81,7 @@ pub struct Branch {
 // Workspace (Lore "Instance")
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
@@ -95,7 +99,7 @@ pub struct Workspace {
 // Locks
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum LockState {
     Unlocked,
@@ -109,7 +113,7 @@ pub enum LockState {
 }
 
 /// The authenticated user, for attributing locks to "me" vs "others".
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub user_id: String,
@@ -129,18 +133,22 @@ impl Identity {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Lock {
     pub path: String,
     pub state: LockState,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub owner: Option<Author>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub instance_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub acquired_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub reason: Option<String>,
 }
 
@@ -148,7 +156,7 @@ pub struct Lock {
 // File / working-tree status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum FileChange {
     Unchanged,
@@ -158,7 +166,7 @@ pub enum FileChange {
     Renamed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum AssetKind {
     Uasset,
@@ -178,7 +186,7 @@ impl AssetKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub path: String,
@@ -188,14 +196,16 @@ pub struct FileEntry {
     pub dirty: bool,
     pub is_binary: bool,
     pub asset_kind: AssetKind,
+    #[ts(type = "number")]
     pub size_bytes: u64,
     pub fragment_count: u32,
     pub lock_state: LockState,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub lock: Option<Lock>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusCounts {
     pub staged: u32,
@@ -226,7 +236,7 @@ impl StatusCounts {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceStatus {
     pub workspace_id: String,
@@ -244,7 +254,7 @@ pub struct WorkspaceStatus {
 // Daemon events & service lifecycle
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceState {
     #[default]
@@ -255,7 +265,7 @@ pub enum ServiceState {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum LoreLogLevel {
     Trace,
@@ -267,13 +277,15 @@ pub enum LoreLogLevel {
 
 /// Progress for multi-gigabyte streaming transfers (Phase 4). Carried by the
 /// `transferProgress` event (see `crate::events::LoreEventKind`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferProgress {
     /// Stable id for the operation (e.g. a commit or sync).
     pub operation_id: String,
     pub label: String,
+    #[ts(type = "number")]
     pub bytes_done: u64,
+    #[ts(type = "number")]
     pub bytes_total: u64,
     pub fragments_done: u32,
     pub fragments_total: u32,

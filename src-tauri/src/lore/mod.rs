@@ -60,7 +60,7 @@ pub type LoreResult<T> = Result<T, LoreError>;
 
 /// Which backend is serving requests — surfaced to the UI so it can show a
 /// "mock data" banner when `lore` isn't available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ClientMode {
     /// Wrapping the real `lore` CLI against a live repository.

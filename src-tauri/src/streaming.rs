@@ -24,18 +24,22 @@ const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 /// channel: emit at most once per this many bytes (plus a final event).
 const PROGRESS_EVERY: u64 = 32 * 1024 * 1024; // 32 MiB
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestSummary {
     pub operation_id: String,
     pub path: String,
+    #[ts(type = "number")]
     pub total_bytes: u64,
     pub fragment_count: u32,
     /// BLAKE3 over the fragment hashes — the asset's content address (hex).
     pub root_hash: String,
+    #[ts(type = "number")]
     pub chunk_size: u64,
+    #[ts(type = "number")]
     pub elapsed_ms: u64,
     /// Peak resident buffer — demonstrates the bound is independent of size.
+    #[ts(type = "number")]
     pub peak_buffer_bytes: u64,
 }
 

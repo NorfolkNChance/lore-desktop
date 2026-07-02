@@ -90,6 +90,34 @@ pub fn run() {
     });
 }
 
+/// Regenerate the TypeScript mirror of the Rust data contracts.
+///
+/// `src/types/bindings/` is committed and re-exported by `src/types/lore.ts`;
+/// CI fails when the committed bindings drift from the Rust structs, so a
+/// contract change is: edit the Rust type, run
+/// `cargo test --lib export_typescript_bindings`, commit both sides.
+#[cfg(test)]
+mod ts_bindings {
+    use ts_rs::{Config, TS};
+
+    #[test]
+    fn export_typescript_bindings() {
+        let cfg = Config::new()
+            .with_out_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/types/bindings"));
+        // Roots; export_all also emits every transitively referenced type.
+        crate::models::WorkspaceStatus::export_all(&cfg).unwrap();
+        crate::models::Workspace::export_all(&cfg).unwrap();
+        crate::models::Identity::export_all(&cfg).unwrap();
+        crate::models::Fragment::export_all(&cfg).unwrap();
+        crate::models::ServiceState::export_all(&cfg).unwrap();
+        crate::models::LoreLogLevel::export_all(&cfg).unwrap();
+        crate::models::TransferProgress::export_all(&cfg).unwrap();
+        crate::lore::ClientMode::export_all(&cfg).unwrap();
+        crate::diff_tools::DiffToolInfo::export_all(&cfg).unwrap();
+        crate::streaming::IngestSummary::export_all(&cfg).unwrap();
+    }
+}
+
 // build.rs picks liblore's per-target file layout via include!; re-include it
 // here so the default `cargo test --lib` pins the mapping — asset names match
 // the real upstream release manifest — without the feature or the library.
