@@ -244,9 +244,10 @@ pub struct WorkspaceStatus {
 // Daemon events & service lifecycle
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceState {
+    #[default]
     Stopped,
     Starting,
     Running,

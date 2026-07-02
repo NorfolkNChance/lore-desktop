@@ -64,6 +64,19 @@ const EV_METADATA: u32 = sys::lore_event_id_t_LORE_EVENT_METADATA as u32;
 const META_STRING: u32 = sys::lore_metadata_tag_t_LORE_METADATA_STRING as u32;
 const META_NUMERIC: u32 = sys::lore_metadata_tag_t_LORE_METADATA_NUMERIC as u32;
 
+/// Normalize a bindgen C-enum-typed field to `u32` before comparing it against
+/// the `EV_*`/`META_*`/`ACTION_*` constants above. bindgen types C enums `u32`
+/// on mac/linux but `i32` under MSVC — comparing a raw enum field against a
+/// `u32` constant broke Windows CI once (`lore_metadata_tag_t`). Route every
+/// tag/enum field read through this so new handlers can't repeat that.
+/// (`lore_event_tag_t` itself is declared `uint32_t` upstream, but reading it
+/// through here keeps the rule uniform.)
+macro_rules! tag_u32 {
+    ($field:expr) => {
+        ($field) as u32
+    };
+}
+
 /// Borrow a `&str` as a `lore_string_t` (ptr + len). The source must outlive
 /// the returned value (and any FFI call using it).
 fn lstr(s: &str) -> sys::lore_string_t {
@@ -93,9 +106,13 @@ const ACTION_MOVE: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_MOVE as u32;
 const ACTION_COPY: u32 = sys::lore_file_action_t_LORE_FILE_ACTION_COPY as u32;
 const NODE_DIRECTORY: u32 = sys::lore_node_type_t_LORE_NODE_TYPE_DIRECTORY as u32;
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Render a 32-byte `lore_hash_t` as lowercase hex.
 fn hash_to_hex(h: &sys::lore_hash_t) -> String {
-    h.data.iter().map(|b| format!("{b:02x}")).collect()
+    bytes_to_hex(&h.data)
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +159,14 @@ fn path_cstring(repo: &Path) -> CString {
         .unwrap_or_else(|_| CString::new("").unwrap())
 }
 
+/// The owned repository path + globals pair every op needs. The `CString` owns
+/// the buffer `repository_path` points into — keep it alive for the FFI call.
+fn repo_globals(repo: &Path, offline: bool) -> (CString, sys::lore_global_args_t) {
+    let repo_c = path_cstring(repo);
+    let globals = make_globals(&repo_c, offline);
+    (repo_c, globals)
+}
+
 /// Invoke a liblore op, routing each event to `handler`. Returns the op's i32
 /// return code. `call` receives the configured callback and performs the actual
 /// `lore_X(...)` call.
@@ -178,7 +203,7 @@ struct OpOutcome {
 impl OpOutcome {
     /// Handle the common terminal events; returns true if it consumed the event.
     unsafe fn absorb(&mut self, event: &sys::lore_event_t) -> bool {
-        match event.tag {
+        match tag_u32!(event.tag) {
             t if t == EV_ERROR => {
                 self.error = Some(lore_string(&event.__bindgen_anon_1.error.error_inner));
                 true
@@ -211,8 +236,7 @@ impl OpOutcome {
 // ---------------------------------------------------------------------------
 
 fn ffi_list_branches(repo: &Path) -> LoreResult<Vec<Branch>> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let args = sys::lore_branch_list_args_t { archived: 0 };
 
     let mut branches: Vec<Branch> = Vec::new();
@@ -223,7 +247,7 @@ fn ffi_list_branches(repo: &Path) -> LoreResult<Vec<Branch>> {
             if outcome.absorb(event) {
                 return;
             }
-            if event.tag == EV_BRANCH_LIST_ENTRY {
+            if tag_u32!(event.tag) ==EV_BRANCH_LIST_ENTRY {
                 let e = &event.__bindgen_anon_1.branch_list_entry;
                 branches.push(Branch {
                     id: String::new(),
@@ -239,8 +263,7 @@ fn ffi_list_branches(repo: &Path) -> LoreResult<Vec<Branch>> {
 }
 
 fn ffi_current_identity(repo: &Path) -> LoreResult<Identity> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     // Empty user_ids => resolve the current user locally.
     let args = sys::lore_auth_user_info_args_t {
         user_ids: sys::lore_string_array_t { ptr: std::ptr::null(), count: 0 },
@@ -254,7 +277,7 @@ fn ffi_current_identity(repo: &Path) -> LoreResult<Identity> {
             if outcome.absorb(event) {
                 return;
             }
-            if event.tag == EV_AUTH_USER_INFO {
+            if tag_u32!(event.tag) ==EV_AUTH_USER_INFO {
                 let e = &event.__bindgen_anon_1.auth_user_info;
                 identity = Some(Identity {
                     user_id: lore_string(&e.id),
@@ -275,8 +298,7 @@ fn ffi_current_identity(repo: &Path) -> LoreResult<Identity> {
 /// `scan` so brand-new files are detected). Locks are merged separately by the
 /// trait method; here every entry starts as `Unknown`.
 fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let mut args: sys::lore_repository_status_args_t = unsafe { std::mem::zeroed() };
     args.scan = 1; // walk the filesystem so new untracked files appear
     args.staged = 1;
@@ -306,15 +328,15 @@ fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
             if outcome.absorb(event) {
                 return;
             }
-            match event.tag {
+            match tag_u32!(event.tag) {
                 t if t == EV_STATUS_FILE => {
                     let f = &event.__bindgen_anon_1.repository_status_file;
                     // Skip directories; the UI lists files.
-                    if f.type_ as u32 == NODE_DIRECTORY {
+                    if tag_u32!(f.type_) == NODE_DIRECTORY {
                         return;
                     }
                     let path = lore_string(&f.path);
-                    let action = f.action as u32;
+                    let action = tag_u32!(f.action);
                     let dirty = f.flag_dirty != 0;
                     let change = if action == ACTION_ADD {
                         FileChange::Added
@@ -350,7 +372,9 @@ fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
                     let rev = hash_to_hex(&r.revision);
                     branch.latest_revision = rev.clone();
                     head.id = rev;
-                    workspace_id = format!("{:x?}", r.repository); // opaque id
+                    // 16-byte repository id → hex, matching the shape of the
+                    // CLI backend's repository id.
+                    workspace_id = bytes_to_hex(&r.repository.data);
                 }
                 _ => {}
             }
@@ -370,8 +394,7 @@ fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
 
 /// All locks on the current branch via `lore_lock_file_query`.
 fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, false); // locks are server-authoritative
+    let (_repo_c, globals) = repo_globals(repo, false); // locks are server-authoritative
     let empty = sys::lore_string_t { string: std::ptr::null(), length: 0 };
     let args = sys::lore_lock_file_query_args_t {
         branch: empty,
@@ -387,7 +410,7 @@ fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
             if outcome.absorb(event) {
                 return;
             }
-            if event.tag == EV_LOCK_QUERY {
+            if tag_u32!(event.tag) ==EV_LOCK_QUERY {
                 let q = &event.__bindgen_anon_1.lock_file_query;
                 locks.push(common::lock_entry(
                     lore_string(&q.path),
@@ -402,8 +425,7 @@ fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
 }
 
 fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let mut args: sys::lore_revision_history_args_t = unsafe { std::mem::zeroed() };
     args.length = limit.unwrap_or(0);
 
@@ -415,7 +437,7 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
             if outcome.absorb(event) {
                 return;
             }
-            match event.tag {
+            match tag_u32!(event.tag) {
                 t if t == EV_HISTORY_ENTRY => {
                     let h = &event.__bindgen_anon_1.revision_history_entry;
                     // Parents: non-zero hashes (the second is a merge parent).
@@ -446,10 +468,7 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
                     if let Some(rev) = revs.last_mut() {
                         let m = &event.__bindgen_anon_1.metadata;
                         let key = lore_string(&m.key);
-                        // lore_metadata_tag_t is a C enum: bindgen types it u32
-                        // on mac/linux but i32 on MSVC — normalize (same as the
-                        // `f.action as u32` in the status handler).
-                        let value_tag = m.value.tag as u32;
+                        let value_tag = tag_u32!(m.value.tag);
                         match key.as_str() {
                             "message" if value_tag == META_STRING => {
                                 rev.message = lore_string(&m.value.__bindgen_anon_1.string);
@@ -480,8 +499,7 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
 }
 
 fn ffi_branch_switch(repo: &Path, name: &str) -> LoreResult<()> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let mut args: sys::lore_branch_switch_args_t = unsafe { std::mem::zeroed() };
     args.branch = lstr(name);
     ffi_action("branch_switch", |cfg| unsafe {
@@ -490,8 +508,7 @@ fn ffi_branch_switch(repo: &Path, name: &str) -> LoreResult<()> {
 }
 
 fn ffi_branch_create(repo: &Path, name: &str) -> LoreResult<()> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let mut args: sys::lore_branch_create_args_t = unsafe { std::mem::zeroed() };
     args.branch = lstr(name);
     ffi_action("branch_create", |cfg| unsafe {
@@ -500,8 +517,7 @@ fn ffi_branch_create(repo: &Path, name: &str) -> LoreResult<()> {
 }
 
 fn ffi_sync(repo: &Path, revision: Option<&str>) -> LoreResult<()> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, false); // sync talks to the remote
+    let (_repo_c, globals) = repo_globals(repo, false); // sync talks to the remote
     let mut args: sys::lore_revision_sync_args_t = unsafe { std::mem::zeroed() };
     if let Some(rev) = revision {
         args.revision = lstr(rev);
@@ -512,8 +528,7 @@ fn ffi_sync(repo: &Path, revision: Option<&str>) -> LoreResult<()> {
 }
 
 fn ffi_push(repo: &Path, branch: Option<&str>) -> LoreResult<()> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, false); // push talks to the remote
+    let (_repo_c, globals) = repo_globals(repo, false); // push talks to the remote
     let mut args: sys::lore_branch_push_args_t = unsafe { std::mem::zeroed() };
     if let Some(b) = branch {
         args.branch = lstr(b);
@@ -527,8 +542,7 @@ fn ffi_stage(repo: &Path, paths: &[String]) -> LoreResult<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let lstrings: Vec<sys::lore_string_t> = paths.iter().map(|p| lstr(p)).collect();
     let mut args: sys::lore_file_stage_args_t = unsafe { std::mem::zeroed() };
     args.paths = sys::lore_string_array_t { ptr: lstrings.as_ptr(), count: lstrings.len() };
@@ -541,8 +555,7 @@ fn ffi_unstage(repo: &Path, paths: &[String]) -> LoreResult<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true);
+    let (_repo_c, globals) = repo_globals(repo, true);
     let lstrings: Vec<sys::lore_string_t> = paths.iter().map(|p| lstr(p)).collect();
     let mut args: sys::lore_file_unstage_args_t = unsafe { std::mem::zeroed() };
     args.paths = sys::lore_string_array_t { ptr: lstrings.as_ptr(), count: lstrings.len() };
@@ -552,8 +565,7 @@ fn ffi_unstage(repo: &Path, paths: &[String]) -> LoreResult<()> {
 }
 
 fn ffi_commit(repo: &Path, message: &str) -> LoreResult<String> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, true); // commit creates a local revision
+    let (_repo_c, globals) = repo_globals(repo, true); // commit creates a local revision
     let mut args: sys::lore_revision_commit_args_t = unsafe { std::mem::zeroed() };
     args.message = lstr(message);
     ffi_action("revision_commit", |cfg| unsafe {
@@ -563,8 +575,7 @@ fn ffi_commit(repo: &Path, message: &str) -> LoreResult<String> {
 }
 
 fn ffi_acquire_lock(repo: &Path, path: &str, reason: Option<String>) -> LoreResult<Lock> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, false); // locks are server-side
+    let (_repo_c, globals) = repo_globals(repo, false); // locks are server-side
     let one = [lstr(path)];
     let mut args: sys::lore_lock_file_acquire_args_t = unsafe { std::mem::zeroed() };
     args.paths = sys::lore_string_array_t { ptr: one.as_ptr(), count: 1 };
@@ -582,8 +593,7 @@ fn ffi_acquire_lock(repo: &Path, path: &str, reason: Option<String>) -> LoreResu
 }
 
 fn ffi_release_lock(repo: &Path, path: &str) -> LoreResult<()> {
-    let repo_c = path_cstring(repo);
-    let globals = make_globals(&repo_c, false);
+    let (_repo_c, globals) = repo_globals(repo, false);
     let one = [lstr(path)];
     let mut args: sys::lore_lock_file_release_args_t = unsafe { std::mem::zeroed() };
     args.paths = sys::lore_string_array_t { ptr: one.as_ptr(), count: 1 };
@@ -596,9 +606,8 @@ fn ffi_release_lock(repo: &Path, path: &str) -> LoreResult<()> {
 /// (not bound to an existing client) so the command layer can call it directly
 /// for an FFI-native clone.
 pub fn clone(url: &str, dest: &Path) -> LoreResult<()> {
-    let dest_c = path_cstring(dest);
     // The destination is the repository path; clone needs the remote (online).
-    let globals = make_globals(&dest_c, false);
+    let (_dest_c, globals) = repo_globals(dest, false);
     let mut args: sys::lore_repository_clone_args_t = unsafe { std::mem::zeroed() };
     args.repository_url = lstr(url);
     ffi_action("repository_clone", |cfg| unsafe {
@@ -629,9 +638,7 @@ impl LoreClient for FfiLoreClient {
 
     async fn status(&self) -> LoreResult<WorkspaceStatus> {
         let repo = self.repository.clone();
-        let mut status = tokio::task::spawn_blocking(move || ffi_repository_status(&repo))
-            .await
-            .map_err(|e| LoreError::Io(e.to_string()))??;
+        let mut status = blocking(move || ffi_repository_status(&repo)).await?;
 
         // Merge server-side lock state, bounded so a slow/unreachable remote
         // degrades to "unknown" rather than stalling (same merge as the CLI
@@ -647,13 +654,12 @@ impl LoreClient for FfiLoreClient {
 
     async fn query_locks(&self) -> LoreResult<Vec<Lock>> {
         let repo = self.repository.clone();
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             let identity =
                 ffi_current_identity(&repo).unwrap_or_else(|_| Identity::unauthenticated());
             ffi_query_locks(&repo, &identity)
         })
         .await
-        .map_err(|e| LoreError::Io(e.to_string()))?
     }
 
     async fn lock_status(&self, path: &str) -> LoreResult<LockState> {
@@ -730,9 +736,7 @@ impl LoreClient for FfiLoreClient {
 
     async fn current_identity(&self) -> LoreResult<Identity> {
         let repo = self.repository.clone();
-        tokio::task::spawn_blocking(move || ffi_current_identity(&repo))
-            .await
-            .map_err(|e| LoreError::Io(e.to_string()))?
+        blocking(move || ffi_current_identity(&repo)).await
     }
 }
 

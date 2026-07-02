@@ -35,12 +35,6 @@ struct DaemonInner {
     stop: Option<tokio::sync::watch::Sender<bool>>,
 }
 
-impl Default for ServiceState {
-    fn default() -> Self {
-        ServiceState::Stopped
-    }
-}
-
 impl DaemonController {
     pub fn new(config: LoreConfig) -> Self {
         let inner = DaemonInner {
@@ -65,23 +59,24 @@ impl DaemonController {
     /// Start watching the configured repository. No-op (stays `Stopped`) when no
     /// repository is configured (the mock backend needs no watcher).
     pub async fn start(&self, app: &AppHandle) {
+        // One critical section for the idempotence check + `Starting` transition,
+        // so two concurrent start() calls can't both pass the guard.
         let repo = {
-            let inner = self.inner.lock().await;
-            match &inner.repository {
+            let mut inner = self.inner.lock().await;
+            if matches!(inner.state, ServiceState::Running | ServiceState::Starting) {
+                return;
+            }
+            let repo = match &inner.repository {
                 Some(r) if r.exists() => r.clone(),
                 _ => {
                     log::info!("daemon: no repository configured; watcher idle");
                     return;
                 }
-            }
+            };
+            inner.state = ServiceState::Starting;
+            repo
         };
-        {
-            let inner = self.inner.lock().await;
-            if matches!(inner.state, ServiceState::Running | ServiceState::Starting) {
-                return;
-            }
-        }
-        set_state(self, app, ServiceState::Starting).await;
+        emit_state(app, ServiceState::Starting);
 
         // Bridge notify's (sync, own-thread) callback to async via an unbounded
         // channel. Ignore churn inside `.lore/` to avoid feedback loops.
