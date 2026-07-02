@@ -3,7 +3,8 @@ import { useLoreStore } from "@/store/loreStore";
 
 /** The pinned commit box at the bottom of the sidebar (GitHub Desktop staple). */
 export function CommitBox() {
-  const { status, committing, commit } = useLoreStore();
+  const { status, busy, commit } = useLoreStore();
+  const committing = busy?.kind === "commit";
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
 
