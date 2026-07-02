@@ -11,6 +11,7 @@ mod lock_manager;
 mod lore;
 mod mock;
 mod models;
+mod paths;
 mod state;
 mod streaming;
 

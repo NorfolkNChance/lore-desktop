@@ -35,6 +35,9 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 blake3 = "1"
 # Filesystem watching for the cross-platform live-update daemon.
 notify = "6"
+# Unpredictable, exclusively-created temp files for the asset-diff base
+# snapshot (Phase 5 hardening — avoids symlink-follow on shared hosts).
+tempfile = "3"
 
 [features]
 # Phase D: bind directly to liblore (in-process, structured, event-driven)

@@ -313,10 +313,9 @@ export const useLoreStore = create<LoreState>((set, get) => ({
   ingestAsset: async (path) => {
     set({ ingestSummary: null, transfer: null, error: null });
     try {
-      // Absolute path on disk = repository root + repo-relative path.
-      const ws = get().workspaces[0];
-      const abs = ws?.path ? `${ws.path}/${path}` : path;
-      const summary = await lore.streamIngestFile(abs);
+      // Repo-relative path; the backend resolves (and validates) it against
+      // the repository root — the boundary check lives on the Rust side.
+      const summary = await lore.streamIngestFile(path);
       set({ ingestSummary: summary, transfer: null });
     } catch (e) {
       set({ error: String(e), transfer: null });
