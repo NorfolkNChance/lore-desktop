@@ -6,12 +6,11 @@
 //! point of the trait seam.
 
 use crate::daemon::DaemonController;
+use crate::events::{emit, LoreEventKind};
 use crate::lore::ClientMode;
 use crate::models::*;
 use crate::state::AppState;
-use tauri::{AppHandle, Emitter, State};
-
-const LORE_EVENT_CHANNEL: &str = "lore://event";
+use tauri::{AppHandle, State};
 
 // ---------------------------------------------------------------------------
 // Backend / service introspection
@@ -121,7 +120,7 @@ pub async fn switch_branch(
     name: String,
 ) -> Result<(), String> {
     state.backend().client.switch_branch(&name).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "branch": name }));
+    emit(&app, LoreEventKind::StatusChanged { source: "switch-branch".into() });
     Ok(())
 }
 
@@ -132,7 +131,7 @@ pub async fn create_branch(
     name: String,
 ) -> Result<(), String> {
     state.backend().client.create_branch(&name).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::BranchSwitched, serde_json::json!({ "created": name }));
+    emit(&app, LoreEventKind::BranchSwitched { branch: name });
     Ok(())
 }
 
@@ -143,7 +142,7 @@ pub async fn sync_repository(
     revision: Option<String>,
 ) -> Result<(), String> {
     state.backend().client.sync(revision).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "synced": true }));
+    emit(&app, LoreEventKind::StatusChanged { source: "sync".into() });
     Ok(())
 }
 
@@ -154,7 +153,7 @@ pub async fn push_repository(
     branch: Option<String>,
 ) -> Result<(), String> {
     state.backend().client.push(branch).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "pushed": true }));
+    emit(&app, LoreEventKind::RevisionCommitted { message: None });
     Ok(())
 }
 
@@ -210,7 +209,7 @@ pub async fn stage_files(
     paths: Vec<String>,
 ) -> Result<(), String> {
     state.backend().client.stage(&paths).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "staged": paths }));
+    emit(&app, LoreEventKind::StatusChanged { source: "stage".into() });
     Ok(())
 }
 
@@ -221,7 +220,7 @@ pub async fn unstage_files(
     paths: Vec<String>,
 ) -> Result<(), String> {
     state.backend().client.unstage(&paths).await.map_err(|e| e.to_string())?;
-    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "unstaged": paths }));
+    emit(&app, LoreEventKind::StatusChanged { source: "unstage".into() });
     Ok(())
 }
 
@@ -232,22 +231,8 @@ pub async fn commit(
     message: String,
 ) -> Result<String, String> {
     let result = state.backend().client.commit(&message).await.map_err(|e| e.to_string())?;
-    emit(
-        &app,
-        LoreEventTag::RevisionCommitted,
-        serde_json::json!({ "message": message }),
-    );
+    emit(&app, LoreEventKind::RevisionCommitted { message: Some(message) });
     Ok(result)
-}
-
-fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
-    let event = LoreEvent {
-        tag,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        level: LoreLogLevel::Info,
-        payload: Some(payload),
-    };
-    let _ = app.emit(LORE_EVENT_CHANNEL, event);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +254,7 @@ pub async fn set_repository(
     }
     let backend = state.set_repository(p.clone());
     daemon.restart(&app, p).await;
-    emit(&app, LoreEventTag::StatusChanged, serde_json::json!({ "repository": path }));
+    emit(&app, LoreEventKind::StatusChanged { source: "set-repository".into() });
     Ok(backend.mode)
 }
 
@@ -317,7 +302,7 @@ pub async fn clone_repository(
 
     let backend = state.set_repository(dest.clone());
     daemon.restart(&app, dest).await;
-    emit(&app, LoreEventTag::RevisionCommitted, serde_json::json!({ "cloned": url }));
+    emit(&app, LoreEventKind::RevisionCommitted { message: None });
     Ok(backend.mode)
 }
 

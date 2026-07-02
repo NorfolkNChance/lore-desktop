@@ -7,6 +7,7 @@
 mod commands;
 mod daemon;
 mod diff_tools;
+mod events;
 mod lock_manager;
 mod lore;
 mod mock;

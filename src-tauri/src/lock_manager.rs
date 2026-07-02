@@ -6,12 +6,11 @@
 //! views refresh instantly. Backed by whichever [`LoreClient`] is active, so it
 //! works identically against the real CLI and the mock.
 
+use crate::events::{emit, LoreEventKind};
 use crate::lore::LoreClient;
-use crate::models::{Lock, LockState, LoreEvent, LoreEventTag, LoreLogLevel};
+use crate::models::{Lock, LockState};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
-
-const LORE_EVENT_CHANNEL: &str = "lore://event";
+use tauri::AppHandle;
 
 pub struct LockManager {
     client: Arc<dyn LoreClient>,
@@ -53,11 +52,8 @@ impl LockManager {
 }
 
 fn emit_lock_changed(app: &AppHandle, path: &str, state: LockState) {
-    let event = LoreEvent {
-        tag: LoreEventTag::LockChanged,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        level: LoreLogLevel::Info,
-        payload: Some(serde_json::json!({ "path": path, "state": state })),
-    };
-    let _ = app.emit(LORE_EVENT_CHANNEL, event);
+    emit(
+        app,
+        LoreEventKind::LockChanged { path: Some(path.to_string()), state: Some(state) },
+    );
 }

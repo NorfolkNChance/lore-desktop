@@ -9,14 +9,14 @@
 //! `ServiceState::Running` means the watcher is active. When liblore lands
 //! (Phase D), its in-process event subscription replaces the periodic poll.
 
+use crate::events::{emit, LoreEventKind};
 use crate::lore::LoreConfig;
-use crate::models::{LoreEvent, LoreEventTag, LoreLogLevel, ServiceState};
+use crate::models::ServiceState;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-const LORE_EVENT_CHANNEL: &str = "lore://event";
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const LOCK_POLL: Duration = Duration::from_secs(30);
 
@@ -124,10 +124,11 @@ impl DaemonController {
                         // Debounce: let a burst of edits settle, then refresh once.
                         tokio::time::sleep(DEBOUNCE).await;
                         while fs_rx.try_recv().is_ok() {}
-                        emit(&app_bg, LoreEventTag::StatusChanged, serde_json::json!({ "source": "watcher" }));
+                        emit(&app_bg, LoreEventKind::StatusChanged { source: "watcher".into() });
                     }
                     _ = poll.tick() => {
-                        emit(&app_bg, LoreEventTag::LockChanged, serde_json::json!({ "source": "poll" }));
+                        // Periodic re-query of server-side locks (no single path).
+                        emit(&app_bg, LoreEventKind::LockChanged { path: None, state: None });
                     }
                 }
             }
@@ -162,15 +163,5 @@ async fn set_state(ctl: &DaemonController, app: &AppHandle, next: ServiceState) 
 }
 
 fn emit_state(app: &AppHandle, state: ServiceState) {
-    emit(app, LoreEventTag::ServiceStateChanged, serde_json::json!({ "state": state }));
-}
-
-fn emit(app: &AppHandle, tag: LoreEventTag, payload: serde_json::Value) {
-    let event = LoreEvent {
-        tag,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        level: LoreLogLevel::Info,
-        payload: Some(payload),
-    };
-    let _ = app.emit(LORE_EVENT_CHANNEL, event);
+    emit(app, LoreEventKind::ServiceStateChanged { state });
 }

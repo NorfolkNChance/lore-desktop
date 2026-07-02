@@ -216,18 +216,6 @@ pub enum ServiceState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum LoreEventTag {
-    LockChanged,
-    StatusChanged,
-    RevisionCommitted,
-    BranchSwitched,
-    ServiceStateChanged,
-    TransferProgress,
-    Log,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum LoreLogLevel {
     Trace,
     Debug,
@@ -236,12 +224,16 @@ pub enum LoreLogLevel {
     Error,
 }
 
+/// Progress for multi-gigabyte streaming transfers (Phase 4). Carried by the
+/// `transferProgress` event (see `crate::events::LoreEventKind`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LoreEvent {
-    pub tag: LoreEventTag,
-    pub timestamp: String,
-    pub level: LoreLogLevel,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<serde_json::Value>,
+pub struct TransferProgress {
+    /// Stable id for the operation (e.g. a commit or sync).
+    pub operation_id: String,
+    pub label: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub fragments_done: u32,
+    pub fragments_total: u32,
 }

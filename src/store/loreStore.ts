@@ -351,15 +351,10 @@ export const useLoreStore = create<LoreState>((set, get) => ({
           void get().refreshStatus();
           break;
         case "serviceStateChanged":
-          if (event.payload && typeof event.payload === "object") {
-            const state = (event.payload as { state?: ServiceState }).state;
-            if (state) set({ serviceState: state });
-          }
+          set({ serviceState: event.payload.state });
           break;
         case "transferProgress":
-          if (event.payload && typeof event.payload === "object") {
-            set({ transfer: event.payload as TransferProgress });
-          }
+          set({ transfer: event.payload });
           break;
         default:
           break;
