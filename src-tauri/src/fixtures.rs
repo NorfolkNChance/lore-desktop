@@ -1,4 +1,5 @@
-//! Static mock data for Phase 1.
+//! Static demo fixtures (formerly `mock.rs` — renamed to stop the confusion
+//! with the stateful `lore::mock` client that consumes them).
 //!
 //! Returns realistic, internally-consistent fixtures matching the data
 //! contracts so the React UI can be built against a live IPC surface before

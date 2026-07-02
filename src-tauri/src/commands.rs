@@ -57,7 +57,7 @@ pub async fn stop_service(
 #[tauri::command]
 pub async fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<Workspace>, String> {
     match state.backend().mode {
-        ClientMode::Mock => Ok(vec![crate::mock::workspace()]),
+        ClientMode::Mock => Ok(vec![crate::fixtures::workspace()]),
         // Both live backends derive the workspace from the real status.
         ClientMode::Cli | ClientMode::Ffi => {
             let backend = state.backend();

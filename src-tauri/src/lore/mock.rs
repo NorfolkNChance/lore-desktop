@@ -22,7 +22,7 @@ pub struct MockLoreClient {
 
 impl MockLoreClient {
     pub fn new() -> Self {
-        let entries = crate::mock::file_entries();
+        let entries = crate::fixtures::file_entries();
         let locks = entries.iter().map(|e| (e.path.clone(), e.lock_state)).collect();
         let staged = entries
             .iter()
@@ -94,7 +94,7 @@ impl LoreClient for MockLoreClient {
         let locks = self.locks.lock().unwrap();
         let staged = self.staged.lock().unwrap();
         let committed = self.committed.lock().unwrap();
-        let mut status = crate::mock::workspace_status();
+        let mut status = crate::fixtures::workspace_status();
         status.locks_available = true; // mock is always local/available
         status.branch.name = self.current_branch.lock().unwrap().clone();
         // Drop committed paths from the working-tree changes.
@@ -200,7 +200,7 @@ impl LoreClient for MockLoreClient {
     }
 
     async fn history(&self, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
-        let mut revs = crate::mock::revisions();
+        let mut revs = crate::fixtures::revisions();
         if let Some(n) = limit {
             revs.truncate(n as usize);
         }
