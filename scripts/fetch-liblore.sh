@@ -43,10 +43,16 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)/src-tauri/vendor/liblore"
 mkdir -p "$DIR"
 echo "Fetching ${ASSET} ..."
 gh release download "$VERSION" --repo EpicGames/lore --pattern "$ASSET" --dir "$DIR" --clobber
-# .zip only occurs on Windows, where `tar` is bsdtar and extracts zip natively.
 case "$ASSET" in
   *.tar.gz) tar -xzf "$DIR/$ASSET" -C "$DIR" ;;
-  *.zip)    tar -xf  "$DIR/$ASSET" -C "$DIR" ;;
+  *.zip)
+    # .zip only occurs on Windows. Git-bash resolves `tar` to GNU tar, which
+    # can't read zip — call Windows' own bsdtar explicitly; otherwise unzip.
+    if [ -n "${SYSTEMROOT:-}" ] && [ -x "$SYSTEMROOT/System32/tar.exe" ]; then
+      "$SYSTEMROOT/System32/tar.exe" -xf "$DIR/$ASSET" -C "$DIR"
+    else
+      unzip -o "$DIR/$ASSET" -d "$DIR"
+    fi ;;
 esac
 rm -f "$DIR/$ASSET"
 echo "liblore ready in $DIR (target: $TARGET)"
