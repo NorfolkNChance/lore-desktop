@@ -35,6 +35,20 @@ npm run typecheck      # tsc --noEmit
 
 The backend defaults to **mock data**. A `liblore` cargo feature is reserved for the Phase 2 real integration.
 
+### liblore FFI backend (optional)
+
+```bash
+scripts/fetch-liblore.sh                                # shared library for this machine
+(cd src-tauri && cargo test --lib --features liblore)   # build + test against it
+```
+
+Supported targets — every platform upstream publishes a liblore build for, verified by
+CI on each PR: **macOS arm64**, **Linux x86_64 / aarch64**, **Windows x86_64**.
+Intel macOS has no upstream liblore build; the default CLI backend covers it there.
+The target → archive/library mapping lives in
+[`src-tauri/liblore_layout.rs`](src-tauri/liblore_layout.rs) (shared by `build.rs` and
+unit tests) and [`scripts/fetch-liblore.sh`](scripts/fetch-liblore.sh).
+
 ## Roadmap
 
 - **Phase 2** — Rust ↔ Lore integration (liblore FFI vs. CLI), daemon lifecycle controller (`lore service`), binary lock manager.

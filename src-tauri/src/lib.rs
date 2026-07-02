@@ -87,3 +87,83 @@ pub fn run() {
         }
     });
 }
+
+// build.rs picks liblore's per-target file layout via include!; re-include it
+// here so the default `cargo test --lib` pins the mapping — asset names match
+// the real upstream release manifest — without the feature or the library.
+#[cfg(test)]
+mod liblore_layout_tests {
+    include!("../liblore_layout.rs");
+
+    #[test]
+    fn asset_names_match_the_upstream_release_manifest() {
+        // Names verified against `gh release view v0.8.3 --repo EpicGames/lore`.
+        for (target, asset) in [
+            ("aarch64-apple-darwin", "liblore-v0.8.3-aarch64-apple-darwin.tar.gz"),
+            ("x86_64-unknown-linux-gnu", "liblore-v0.8.3-x86_64-unknown-linux-gnu.tar.gz"),
+            (
+                "aarch64-unknown-linux-gnu",
+                "liblore-v0.8.3-aarch64-unknown-linux-gnu-neoverse-512tvb.tar.gz",
+            ),
+            ("x86_64-pc-windows-msvc", "liblore-v0.8.3-x86_64-pc-windows-msvc.zip"),
+        ] {
+            assert_eq!(liblore_layout(target).unwrap().asset, asset, "{target}");
+        }
+    }
+
+    #[test]
+    fn link_and_runtime_files_per_platform() {
+        // (link_file, runtime_file, uses_rpath) — verified against the actual
+        // archive contents: mac/linux ship one shared library; Windows ships
+        // lore.dll + the lore.lib import lib and has no rpath.
+        let mac = liblore_layout("aarch64-apple-darwin").unwrap();
+        assert_eq!(
+            (mac.link_file, mac.runtime_file, mac.uses_rpath),
+            ("liblore.dylib", "liblore.dylib", true)
+        );
+        let linux = liblore_layout("aarch64-unknown-linux-gnu").unwrap();
+        assert_eq!(
+            (linux.link_file, linux.runtime_file, linux.uses_rpath),
+            ("liblore.so", "liblore.so", true)
+        );
+        let win = liblore_layout("x86_64-pc-windows-msvc").unwrap();
+        assert_eq!(
+            (win.link_file, win.runtime_file, win.uses_rpath),
+            ("lore.lib", "lore.dll", false)
+        );
+    }
+
+    #[test]
+    fn unsupported_targets_point_at_the_cli_backend() {
+        for target in ["x86_64-apple-darwin", "riscv64gc-unknown-linux-gnu"] {
+            let err = liblore_layout(target).unwrap_err();
+            assert!(err.contains("--features liblore"), "{target}: {err}");
+        }
+    }
+
+    #[test]
+    fn fetch_script_mapping_stays_in_sync() {
+        // scripts/fetch-liblore.sh duplicates the mapping in shell; parse the
+        // script text so the two can't drift silently.
+        let script = include_str!("../../scripts/fetch-liblore.sh");
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+        ] {
+            let asset = liblore_layout(target).unwrap().asset;
+            let suffix = asset
+                .strip_prefix(&format!("liblore-{LIBLORE_VERSION}-"))
+                .unwrap();
+            assert!(
+                script.contains(&format!("liblore-${{VERSION}}-{suffix}")),
+                "fetch-liblore.sh is missing {suffix} for {target}"
+            );
+        }
+        assert!(
+            script.contains(&format!("VERSION=\"{LIBLORE_VERSION}\"")),
+            "fetch-liblore.sh pins a different liblore version"
+        );
+    }
+}
