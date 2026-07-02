@@ -20,9 +20,11 @@ use crate::models::*;
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-/// Errors crossing the integration boundary. Kept dependency-free; the command
-/// layer flattens these to `String` for the frontend.
-#[derive(Debug, Clone)]
+/// Errors crossing the integration boundary. Serialized as
+/// `{ kind, message }` so IPC commands can return it directly and the
+/// frontend can branch on `kind` instead of sniffing message text.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[serde(tag = "kind", content = "message", rename_all = "camelCase")]
 pub enum LoreError {
     /// No repository at the configured path.
     RepositoryNotFound(String),
@@ -34,6 +36,14 @@ pub enum LoreError {
     Parse(String),
     /// I/O failure spawning or communicating with the process.
     Io(String),
+    /// The command needs a repository on disk and the active backend has none
+    /// (mock backend).
+    NoRepository(String),
+    /// A caller-supplied path failed validation at the IPC boundary.
+    InvalidPath(String),
+    /// A desktop-integration failure outside lore itself (diff tools, temp
+    /// snapshots, dialogs).
+    Integration(String),
 }
 
 impl std::fmt::Display for LoreError {
@@ -44,6 +54,10 @@ impl std::fmt::Display for LoreError {
             LoreError::Cli(m) => write!(f, "{m}"),
             LoreError::Parse(m) => write!(f, "could not parse lore output: {m}"),
             LoreError::Io(m) => write!(f, "io error: {m}"),
+            // Messages below are written self-contained at the raise site.
+            LoreError::NoRepository(m) => write!(f, "{m}"),
+            LoreError::InvalidPath(m) => write!(f, "{m}"),
+            LoreError::Integration(m) => write!(f, "{m}"),
         }
     }
 }

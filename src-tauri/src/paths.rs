@@ -5,6 +5,7 @@
 //! it through [`resolve_repo_path`], which confines the result to the
 //! repository root.
 
+use crate::lore::LoreError;
 use std::path::{Component, Path, PathBuf};
 
 /// Resolve a caller-supplied, repository-relative path against `root`,
@@ -20,40 +21,48 @@ use std::path::{Component, Path, PathBuf};
 /// Only the *comparison* uses canonicalized paths; the returned path is the
 /// plain `root.join(requested)` so downstream consumers (the `lore` CLI is
 /// picky about canonicalized roots) see the path as configured.
-pub fn resolve_repo_path(root: &Path, requested: &str) -> Result<PathBuf, String> {
+pub fn resolve_repo_path(root: &Path, requested: &str) -> Result<PathBuf, LoreError> {
     if requested.is_empty() {
-        return Err("empty path".to_string());
+        return Err(LoreError::InvalidPath("empty path".to_string()));
     }
     let rel = Path::new(requested);
     if rel.is_absolute() {
-        return Err(format!("absolute paths are not allowed: {requested}"));
+        return Err(LoreError::InvalidPath(format!(
+            "absolute paths are not allowed: {requested}"
+        )));
     }
     for component in rel.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir => {
-                return Err(format!("path escapes the repository: {requested}"));
+                return Err(LoreError::InvalidPath(format!(
+                    "path escapes the repository: {requested}"
+                )));
             }
             // RootDir / Prefix (e.g. `C:` on Windows) even when `is_absolute()`
             // was false, as with `C:foo` drive-relative paths.
-            _ => return Err(format!("invalid path: {requested}")),
+            _ => return Err(LoreError::InvalidPath(format!("invalid path: {requested}"))),
         }
     }
 
     let joined = root.join(rel);
     if !joined.exists() {
-        return Err(format!("not found in repository: {requested}"));
+        return Err(LoreError::InvalidPath(format!(
+            "not found in repository: {requested}"
+        )));
     }
 
     // Symlink check: the real location must still be inside the real root.
     let canon_root = root
         .canonicalize()
-        .map_err(|e| format!("repository root unavailable: {e}"))?;
+        .map_err(|e| LoreError::Io(format!("repository root unavailable: {e}")))?;
     let canon = joined
         .canonicalize()
-        .map_err(|e| format!("cannot resolve {requested}: {e}"))?;
+        .map_err(|e| LoreError::Io(format!("cannot resolve {requested}: {e}")))?;
     if !canon.starts_with(&canon_root) {
-        return Err(format!("path escapes the repository: {requested}"));
+        return Err(LoreError::InvalidPath(format!(
+            "path escapes the repository: {requested}"
+        )));
     }
 
     Ok(joined)
@@ -81,7 +90,7 @@ mod tests {
     fn rejects_absolute_paths() {
         let repo = repo();
         let outside = repo.path().join("Assets/Hero.uasset");
-        let err = resolve_repo_path(repo.path(), outside.to_str().unwrap()).unwrap_err();
+        let err = resolve_repo_path(repo.path(), outside.to_str().unwrap()).unwrap_err().to_string();
         assert!(err.contains("absolute"), "{err}");
     }
 
@@ -89,7 +98,7 @@ mod tests {
     fn rejects_parent_dir_escapes() {
         let repo = repo();
         for evil in ["../secrets", "Assets/../../secrets", ".."] {
-            let err = resolve_repo_path(repo.path(), evil).unwrap_err();
+            let err = resolve_repo_path(repo.path(), evil).unwrap_err().to_string();
             assert!(err.contains("escapes"), "{evil}: {err}");
         }
     }
@@ -97,7 +106,7 @@ mod tests {
     #[test]
     fn rejects_missing_files() {
         let repo = repo();
-        let err = resolve_repo_path(repo.path(), "Assets/Nope.uasset").unwrap_err();
+        let err = resolve_repo_path(repo.path(), "Assets/Nope.uasset").unwrap_err().to_string();
         assert!(err.contains("not found"), "{err}");
     }
 
@@ -113,7 +122,7 @@ mod tests {
         let repo = repo();
         let outside = tempfile::NamedTempFile::new().unwrap();
         std::os::unix::fs::symlink(outside.path(), repo.path().join("sneaky")).unwrap();
-        let err = resolve_repo_path(repo.path(), "sneaky").unwrap_err();
+        let err = resolve_repo_path(repo.path(), "sneaky").unwrap_err().to_string();
         assert!(err.contains("escapes"), "{err}");
     }
 

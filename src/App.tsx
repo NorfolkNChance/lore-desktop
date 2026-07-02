@@ -41,7 +41,7 @@ export default function App() {
 
       {error && (
         <div className="flex items-center gap-2 border-b border-danger/30 bg-danger-subtle px-4 py-1.5 text-[12px] text-danger">
-          <span className="flex-1">{error}</span>
+          <span className="flex-1">{error.message}</span>
           <button onClick={dismissError} aria-label="dismiss" className="px-1">
             ✕
           </button>

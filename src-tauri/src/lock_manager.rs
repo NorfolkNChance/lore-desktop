@@ -7,7 +7,7 @@
 //! works identically against the real CLI and the mock.
 
 use crate::events::{emit, LoreEventKind};
-use crate::lore::LoreClient;
+use crate::lore::{LoreClient, LoreError};
 use crate::models::{Lock, LockState};
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -21,12 +21,12 @@ impl LockManager {
         Self { client }
     }
 
-    pub async fn list(&self) -> Result<Vec<Lock>, String> {
-        self.client.query_locks().await.map_err(|e| e.to_string())
+    pub async fn list(&self) -> Result<Vec<Lock>, LoreError> {
+        self.client.query_locks().await
     }
 
-    pub async fn status(&self, path: &str) -> Result<LockState, String> {
-        self.client.lock_status(path).await.map_err(|e| e.to_string())
+    pub async fn status(&self, path: &str) -> Result<LockState, LoreError> {
+        self.client.lock_status(path).await
     }
 
     pub async fn acquire(
@@ -34,18 +34,14 @@ impl LockManager {
         app: &AppHandle,
         path: &str,
         reason: Option<String>,
-    ) -> Result<Lock, String> {
-        let lock = self
-            .client
-            .acquire_lock(path, reason)
-            .await
-            .map_err(|e| e.to_string())?;
+    ) -> Result<Lock, LoreError> {
+        let lock = self.client.acquire_lock(path, reason).await?;
         emit_lock_changed(app, path, LockState::LockedByMe);
         Ok(lock)
     }
 
-    pub async fn release(&self, app: &AppHandle, path: &str) -> Result<(), String> {
-        self.client.release_lock(path).await.map_err(|e| e.to_string())?;
+    pub async fn release(&self, app: &AppHandle, path: &str) -> Result<(), LoreError> {
+        self.client.release_lock(path).await?;
         emit_lock_changed(app, path, LockState::Unlocked);
         Ok(())
     }

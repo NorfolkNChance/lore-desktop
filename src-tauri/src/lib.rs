@@ -113,6 +113,7 @@ mod ts_bindings {
         crate::models::LoreLogLevel::export_all(&cfg).unwrap();
         crate::models::TransferProgress::export_all(&cfg).unwrap();
         crate::lore::ClientMode::export_all(&cfg).unwrap();
+        crate::lore::LoreError::export_all(&cfg).unwrap();
         crate::diff_tools::DiffToolInfo::export_all(&cfg).unwrap();
         crate::streaming::IngestSummary::export_all(&cfg).unwrap();
     }
