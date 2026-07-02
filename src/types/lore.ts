@@ -42,6 +42,7 @@ export type { TransferProgress } from "./bindings/TransferProgress";
 export type { ClientMode } from "./bindings/ClientMode";
 export type { DiffTool } from "./bindings/DiffTool";
 export type { IngestSummary } from "./bindings/IngestSummary";
+export type { LoreError } from "./bindings/LoreError";
 
 import type { LockState } from "./bindings/LockState";
 import type { LoreLogLevel } from "./bindings/LoreLogLevel";

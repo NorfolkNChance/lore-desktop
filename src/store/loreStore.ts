@@ -35,7 +35,7 @@ interface LoreState {
   backendMode: ClientMode;
   loreVersion: string | null;
   loading: boolean;
-  error: string | null;
+  error: lore.IpcError | null;
   lastEvent: LoreEvent | null;
 
   // UI state
@@ -124,7 +124,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       lore.listDiffTools().then((diffTools) => set({ diffTools })).catch(() => {});
       lore.currentIdentity().then((identity) => set({ identity })).catch(() => {});
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ loading: false });
     }
@@ -141,7 +141,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
         selectedPath: stillThere ? cur : status.entries[0]?.path ?? null,
       });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -172,7 +172,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await get().refreshBranches();
       await get().refreshHistory();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -184,7 +184,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.createBranch(name);
       await get().refreshBranches();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -197,7 +197,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await get().refreshStatus();
       await get().refreshHistory();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -209,7 +209,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.pushRepository();
       await get().refreshHistory();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -227,7 +227,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
         await get().bootstrap();
       }
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -239,7 +239,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.cloneRepository(url, path);
       await get().bootstrap();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     } finally {
       set({ busy: null });
     }
@@ -254,7 +254,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.acquireLock(path, reason);
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -263,7 +263,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.releaseLock(path);
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -273,7 +273,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       else await lore.unstageFiles([path]);
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -285,7 +285,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await get().refreshHistory();
       return true;
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
       return false;
     } finally {
       set({ committing: false });
@@ -297,7 +297,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.startService();
       set({ serviceState: await lore.serviceState() });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -306,7 +306,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       await lore.stopService();
       set({ serviceState: await lore.serviceState() });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 
@@ -318,7 +318,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
       const summary = await lore.streamIngestFile(path);
       set({ ingestSummary: summary, transfer: null });
     } catch (e) {
-      set({ error: String(e), transfer: null });
+      set({ error: lore.toIpcError(e), transfer: null });
     }
   },
 
@@ -326,7 +326,7 @@ export const useLoreStore = create<LoreState>((set, get) => ({
     try {
       await lore.launchAssetDiff(path, toolId);
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: lore.toIpcError(e) });
     }
   },
 

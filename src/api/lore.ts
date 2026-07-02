@@ -25,6 +25,25 @@ import {
 } from "@/types/lore";
 
 // ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/**
+ * The error shape surfaced to the UI: a typed `LoreError` from the backend
+ * (commands reject with its `{ kind, message }` serialization), or an unknown
+ * runtime error coerced into the same shape.
+ */
+export type IpcError = { kind: string; message: string };
+
+export const toIpcError = (e: unknown): IpcError => {
+  if (e && typeof e === "object" && "kind" in e && "message" in e) {
+    const { kind, message } = e as IpcError;
+    return { kind: String(kind), message: String(message) };
+  }
+  return { kind: "unknown", message: String(e) };
+};
+
+// ---------------------------------------------------------------------------
 // Backend introspection
 // ---------------------------------------------------------------------------
 
