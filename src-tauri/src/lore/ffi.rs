@@ -494,12 +494,16 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
                     if let Some(rev) = revs.last_mut() {
                         let m = &event.__bindgen_anon_1.metadata;
                         let key = lore_string(&m.key);
+                        // lore_metadata_tag_t is a C enum: bindgen types it u32
+                        // on mac/linux but i32 on MSVC — normalize (same as the
+                        // `f.action as u32` in the status handler).
+                        let value_tag = m.value.tag as u32;
                         match key.as_str() {
-                            "message" if m.value.tag == META_STRING => {
+                            "message" if value_tag == META_STRING => {
                                 rev.message = lore_string(&m.value.__bindgen_anon_1.string);
                             }
                             // liblore reports the commit time as Unix milliseconds.
-                            "timestamp" if m.value.tag == META_NUMERIC => {
+                            "timestamp" if value_tag == META_NUMERIC => {
                                 let millis = m.value.__bindgen_anon_1.numeric as i64;
                                 if let Some(dt) = chrono::DateTime::from_timestamp_millis(millis) {
                                     rev.timestamp = dt.to_rfc3339();
@@ -508,7 +512,7 @@ fn ffi_history(repo: &Path, limit: Option<u32>) -> LoreResult<Vec<Revision>> {
                             // `lore_revision_history` only emits branch/timestamp/
                             // message — author isn't carried here (kept for the
                             // day a future key appears).
-                            "author" | "creator" if m.value.tag == META_STRING => {
+                            "author" | "creator" if value_tag == META_STRING => {
                                 rev.author.name = lore_string(&m.value.__bindgen_anon_1.string);
                             }
                             _ => {}

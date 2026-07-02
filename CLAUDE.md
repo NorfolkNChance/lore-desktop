@@ -25,6 +25,10 @@ npm run build                     # tsc --noEmit && vite build
 (cd src-tauri && cargo check)        # fast backend type-check
 ```
 
+CI (`.github/workflows/ci.yml`) runs the same checks — plus
+`cargo test --lib --features liblore` after `scripts/fetch-liblore.sh` — on
+macOS arm64, Linux x86_64/aarch64, and Windows x86_64 for every PR.
+
 ## Required workflow: test → commit → push
 
 Always run local testing **before** committing. Only commit if everything passes, and only
