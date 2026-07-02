@@ -301,9 +301,11 @@ pub async fn clone_repository(
         let binary = state
             .binary()
             .ok_or_else(|| "lore binary not found; cannot clone".to_string())?;
+        // `--` terminates option parsing so a caller-supplied URL/path starting
+        // with `-` can never be interpreted as a `lore` flag.
         let output = tokio::process::Command::new(&binary)
             .arg("--non-interactive")
-            .args(["clone", &url, &path])
+            .args(["clone", "--", &url, &path])
             .output()
             .await
             .map_err(|e| format!("failed to run lore clone: {e}"))?;
@@ -323,16 +325,26 @@ pub async fn clone_repository(
 // Phase 4: memory-efficient streaming ingest
 // ---------------------------------------------------------------------------
 
-/// Stream a (potentially multi-GB) file into content-addressed fragments,
-/// emitting `transferProgress` events. Runs on the async runtime, so the UI
-/// thread is never blocked; resident memory is bounded to one chunk.
+/// Stream a (potentially multi-GB) repository file into content-addressed
+/// fragments, emitting `transferProgress` events. Runs on the async runtime,
+/// so the UI thread is never blocked; resident memory is bounded to one chunk.
+///
+/// `path` is repository-relative and validated against the repository root —
+/// the webview cannot use this to read arbitrary files on disk.
 #[tauri::command]
 pub async fn stream_ingest_file(
     app: AppHandle,
+    state: State<'_, AppState>,
     path: String,
 ) -> Result<crate::streaming::IngestSummary, String> {
+    let backend = state.backend();
+    let repo = backend
+        .repository
+        .as_ref()
+        .ok_or_else(|| "no repository on disk (mock backend) — cannot ingest".to_string())?;
+    let resolved = crate::paths::resolve_repo_path(repo, &path)?;
     let op_id = format!("ingest-{}", chrono::Utc::now().timestamp_millis());
-    crate::streaming::stream_ingest(app, path, op_id).await
+    crate::streaming::stream_ingest(app, resolved.display().to_string(), op_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -371,22 +383,28 @@ pub fn launch_asset_diff(
         .repository
         .as_ref()
         .ok_or_else(|| "no repository on disk (mock backend) — use the diff hook directly".to_string())?;
-    let working = repo.join(&path);
-    if !working.exists() {
-        return Err(format!("asset not found on disk: {}", working.display()));
-    }
+    let working = crate::paths::resolve_repo_path(repo, &path)?;
     // Snapshot the committed base to a temp file (placeholder until binary
-    // revision export is available).
-    let base = std::env::temp_dir().join(format!(
-        "lore-base-{}-{}",
-        chrono::Utc::now().timestamp_millis(),
-        working.file_name().and_then(|n| n.to_str()).unwrap_or("asset")
-    ));
-    std::fs::copy(&working, &base).map_err(|e| format!("snapshot base: {e}"))?;
+    // revision export is available). `tempfile` creates it exclusively with an
+    // unpredictable name; `keep()` then detaches it so the diff tool can read
+    // it after we return — the tool owns its lifetime from here.
+    let file_name = working
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("asset");
+    let base = tempfile::Builder::new()
+        .prefix("lore-base-")
+        .suffix(&format!("-{file_name}"))
+        .tempfile()
+        .map_err(|e| format!("snapshot base: {e}"))?;
+    std::fs::copy(&working, base.path()).map_err(|e| format!("snapshot base: {e}"))?;
+    let (_file, base_path) = base
+        .keep()
+        .map_err(|e| format!("snapshot base: {e}"))?;
 
     crate::diff_tools::launch(
         tool_id.as_deref(),
-        &base.display().to_string(),
+        &base_path.display().to_string(),
         &working.display().to_string(),
     )
 }
