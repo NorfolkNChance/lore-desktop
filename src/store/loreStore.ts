@@ -47,6 +47,8 @@ interface LoreState {
   serviceState: ServiceState;
   backendMode: ClientMode;
   loreVersion: string | null;
+  /** Set when the CLI backend's version is outside the parser-tested range. */
+  compatWarning: string | null;
   busy: Busy;
   error: lore.IpcError | null;
   lastEvent: LoreEvent | null;
@@ -126,6 +128,7 @@ export const useLoreStore = create<LoreState>((set, get) => {
     serviceState: "stopped",
     backendMode: "mock",
     loreVersion: null,
+    compatWarning: null,
     busy: null,
     error: null,
     lastEvent: null,
@@ -142,15 +145,20 @@ export const useLoreStore = create<LoreState>((set, get) => {
 
     bootstrap: () =>
       run({ label: "Loading…", kind: "bootstrap" }, async () => {
-        const [workspaces, serviceState, backendMode, loreVersion] =
-          await Promise.all([
-            lore.listWorkspaces(),
-            lore.serviceState(),
-            lore.backendMode(),
-            lore.loreVersion().catch(() => null),
-          ]);
+        const [workspaces, serviceState, info] = await Promise.all([
+          lore.listWorkspaces(),
+          lore.serviceState(),
+          lore.backendInfo().catch(() => null),
+        ]);
         const activeWorkspaceId = workspaces[0]?.id ?? null;
-        set({ workspaces, activeWorkspaceId, serviceState, backendMode, loreVersion });
+        set({
+          workspaces,
+          activeWorkspaceId,
+          serviceState,
+          backendMode: info?.mode ?? "mock",
+          loreVersion: info?.version ?? null,
+          compatWarning: info?.compatWarning ?? null,
+        });
         const status = await lore.getWorkspaceStatus();
         // Auto-select the first changed file so the detail pane isn't empty.
         const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;

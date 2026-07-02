@@ -16,15 +16,20 @@ use tauri::{AppHandle, State};
 // Backend / service introspection
 // ---------------------------------------------------------------------------
 
-/// Which backend is active, so the UI can show a "mock data" banner.
+/// Which backend is active + its version and parser compatibility — one call
+/// for everything the toolbar badge needs (replaces backend_mode/lore_version).
 #[tauri::command]
-pub fn backend_mode(state: State<'_, AppState>) -> ClientMode {
-    state.backend().mode
-}
-
-#[tauri::command]
-pub async fn lore_version(state: State<'_, AppState>) -> Result<String, LoreError> {
-    state.backend().client.version().await
+pub async fn backend_info(state: State<'_, AppState>) -> Result<BackendInfo, LoreError> {
+    let backend = state.backend();
+    let version = backend.client.version().await.ok();
+    // Only the CLI backend parses human text, so only it can silently
+    // mis-parse; the FFI library is vendored at a pinned version and the mock
+    // has no external binary.
+    let compat_warning = match backend.mode {
+        ClientMode::Cli => version.as_deref().and_then(crate::lore::parse::compat_warning),
+        ClientMode::Ffi | ClientMode::Mock => None,
+    };
+    Ok(BackendInfo { mode: backend.mode, version, compat_warning })
 }
 
 #[tauri::command]

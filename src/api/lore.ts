@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   LORE_EVENT_CHANNEL,
+  type BackendInfo,
   type Branch,
   type ClientMode,
   type DiffTool,
@@ -47,10 +48,11 @@ export const toIpcError = (e: unknown): IpcError => {
 // Backend introspection
 // ---------------------------------------------------------------------------
 
-/** Which backend is serving data: real `lore` CLI or the stateful mock. */
-export const backendMode = (): Promise<ClientMode> => invoke("backend_mode");
-
-export const loreVersion = (): Promise<string> => invoke("lore_version");
+/**
+ * Which backend is serving data (CLI / FFI / mock), its version, and — for
+ * the CLI backend — a parser-compatibility warning for untested versions.
+ */
+export const backendInfo = (): Promise<BackendInfo> => invoke("backend_info");
 
 // ---------------------------------------------------------------------------
 // Read commands (repository comes from backend-managed state)

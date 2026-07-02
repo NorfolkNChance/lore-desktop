@@ -347,21 +347,44 @@ impl LoreClient for CliLoreClient {
 /// Parse `lore auth info` into an `Identity`. The exact layout depends on the
 /// auth backend; we extract a user id and a display name best-effort and treat
 /// any non-empty output as authenticated.
+///
+/// Exact key matches win over substring heuristics: this feeds lock
+/// me-vs-other attribution, and a bare `contains("id")` would let a line like
+/// `Provider: github` claim the id slot ahead of a real `Id:` line.
 fn parse_identity(output: &str) -> Identity {
     let mut user_id = String::new();
     let mut name = String::new();
-    for line in output.lines() {
-        let l = line.trim();
-        if let Some((k, v)) = l.split_once(':') {
+    // Pass 1: exact keys. Pass 2: substring heuristics for auth backends with
+    // unknown layouts, filling only the slots pass 1 left empty.
+    for exact in [true, false] {
+        for line in output.lines() {
+            let Some((k, v)) = line.trim().split_once(':') else { continue };
             let key = k.trim().to_ascii_lowercase();
             let val = v.trim().to_string();
-            if key.contains("id") && user_id.is_empty() {
+            if val.is_empty() {
+                continue;
+            }
+            let id_key = if exact {
+                matches!(key.as_str(), "id" | "user id" | "user_id" | "userid")
+            } else {
+                key.contains("id")
+            };
+            let name_key = if exact {
+                matches!(
+                    key.as_str(),
+                    "name" | "username" | "user name" | "display name" | "user" | "email"
+                )
+            } else {
+                key.contains("name") || key.contains("user") || key.contains("email")
+            };
+            if id_key && user_id.is_empty() {
                 user_id = val;
-            } else if (key.contains("name") || key.contains("user") || key.contains("email"))
-                && name.is_empty()
-            {
+            } else if name_key && name.is_empty() {
                 name = val;
             }
+        }
+        if !user_id.is_empty() && !name.is_empty() {
+            break;
         }
     }
     if user_id.is_empty() && name.is_empty() {
@@ -384,4 +407,37 @@ fn file_size(repo: &Path, rel: &str) -> u64 {
 
 fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Synthetic layouts (no captured `lore auth info` from a logged-in CLI
+    // yet — capture one and replace these when available). They pin the
+    // precedence rules, not the real format.
+
+    #[test]
+    fn identity_exact_keys_beat_substring_matches() {
+        // "Provider" contains "id" — it must not outrank the real Id line.
+        let id = parse_identity("Provider: github\nId: u-42\nName: James\n");
+        assert_eq!(id.user_id, "u-42");
+        assert_eq!(id.name, "James");
+        assert!(id.authenticated);
+    }
+
+    #[test]
+    fn identity_substring_fallback_fills_remaining_slots() {
+        // No exact keys at all — the heuristics still find something.
+        let id = parse_identity("Account Identifier: abc\nFull Username: James Burns\n");
+        assert_eq!(id.user_id, "abc");
+        assert_eq!(id.name, "James Burns");
+    }
+
+    #[test]
+    fn identity_unstructured_output_becomes_the_name() {
+        let id = parse_identity("james@example.com\n");
+        assert_eq!(id.user_id, "");
+        assert_eq!(id.name, "james@example.com");
+    }
 }
