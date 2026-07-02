@@ -68,6 +68,13 @@ jobs:
         run: cargo test --lib
         working-directory: src-tauri
 
+      # The backend tests regenerate src/types/bindings/ (ts-rs); fail if the
+      # committed bindings drift from the Rust contracts. Linux-only to avoid
+      # CRLF noise on the Windows runner.
+      - name: TypeScript bindings are up to date
+        if: runner.os == 'Linux'
+        run: git diff --exit-code src/types/bindings
+
       - name: Fetch liblore (${{ matrix.target }})
         env:
           GH_TOKEN: ${{ github.token }}

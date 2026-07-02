@@ -71,12 +71,14 @@ const TOOLS: &[ToolSpec] = &[
     },
 ];
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "DiffTool")] // the frontend's historical name for this shape
 pub struct DiffToolInfo {
     pub id: String,
     pub name: String,
     pub available: bool,
+    #[ts(optional)]
     pub path: Option<String>,
 }
 
