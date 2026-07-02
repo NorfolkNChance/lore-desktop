@@ -19,6 +19,7 @@ mod sys {
     include!(concat!(env!("OUT_DIR"), "/liblore_bindings.rs"));
 }
 
+use super::common;
 use super::{ClientMode, LoreClient, LoreError, LoreResult};
 use crate::models::*;
 use async_trait::async_trait;
@@ -95,25 +96,6 @@ const NODE_DIRECTORY: u32 = sys::lore_node_type_t_LORE_NODE_TYPE_DIRECTORY as u3
 /// Render a 32-byte `lore_hash_t` as lowercase hex.
 fn hash_to_hex(h: &sys::lore_hash_t) -> String {
     h.data.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Classify an asset by extension (FFI-local copy of the CLI heuristic).
-fn asset_kind_for(path: &str) -> AssetKind {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "umap" => AssetKind::Umap,
-        "uasset" => AssetKind::Uasset,
-        "png" | "tga" | "jpg" | "jpeg" | "exr" | "dds" => AssetKind::Texture,
-        "wav" | "ogg" | "mp3" => AssetKind::Audio,
-        "txt" | "ini" | "json" | "xml" | "cpp" | "h" | "rs" | "ts" | "md" | "toml" => {
-            AssetKind::Text
-        }
-        _ => AssetKind::Binary,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,16 +266,8 @@ fn ffi_current_identity(repo: &Path) -> LoreResult<Identity> {
     );
     // Not being logged in isn't a hard error — return an unauthenticated identity.
     match outcome.into_result(rc, "auth_user_info") {
-        Ok(()) => Ok(identity.unwrap_or(Identity {
-            user_id: String::new(),
-            name: String::new(),
-            authenticated: false,
-        })),
-        Err(_) => Ok(Identity {
-            user_id: String::new(),
-            name: String::new(),
-            authenticated: false,
-        }),
+        Ok(()) => Ok(identity.unwrap_or_else(Identity::unauthenticated)),
+        Err(_) => Ok(Identity::unauthenticated()),
     }
 }
 
@@ -355,14 +329,14 @@ fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
                     } else {
                         FileChange::Unchanged
                     };
-                    let kind = asset_kind_for(&path);
+                    let kind = common::asset_kind_for(&path);
                     entries.push(FileEntry {
                         path,
                         file_id: String::new(),
                         change,
                         staged: f.flag_staged != 0,
                         dirty,
-                        is_binary: !matches!(kind, AssetKind::Text),
+                        is_binary: kind.is_binary(),
                         asset_kind: kind,
                         size_bytes: f.size,
                         fragment_count: 0,
@@ -384,21 +358,12 @@ fn ffi_repository_status(repo: &Path) -> LoreResult<WorkspaceStatus> {
     );
     outcome.into_result(rc, "repository_status")?;
 
-    let counts = StatusCounts {
-        staged: entries.iter().filter(|e| e.staged).count() as u32,
-        modified: entries
-            .iter()
-            .filter(|e| matches!(e.change, FileChange::Modified))
-            .count() as u32,
-        locked_by_me: 0,
-        locked_by_other: 0,
-    };
     Ok(WorkspaceStatus {
         workspace_id,
         branch,
         head_revision: head,
+        counts: StatusCounts::from_entries(&entries),
         entries,
-        counts,
         locks_available: false, // filled by the lock merge in status()
     })
 }
@@ -424,24 +389,11 @@ fn ffi_query_locks(repo: &Path, identity: &Identity) -> LoreResult<Vec<Lock>> {
             }
             if event.tag == EV_LOCK_QUERY {
                 let q = &event.__bindgen_anon_1.lock_file_query;
-                let owner = lore_string(&q.owner);
-                let state = if identity.authenticated
-                    && !owner.is_empty()
-                    && owner != identity.user_id
-                    && owner != identity.name
-                {
-                    LockState::LockedByOther
-                } else {
-                    LockState::LockedByMe
-                };
-                locks.push(Lock {
-                    path: lore_string(&q.path),
-                    state,
-                    owner: Some(Author { name: owner, email: String::new() }),
-                    instance_id: None,
-                    acquired_at: None,
-                    reason: None,
-                });
+                locks.push(common::lock_entry(
+                    lore_string(&q.path),
+                    lore_string(&q.owner),
+                    identity,
+                ));
             }
         },
     );
@@ -682,51 +634,22 @@ impl LoreClient for FfiLoreClient {
             .map_err(|e| LoreError::Io(e.to_string()))??;
 
         // Merge server-side lock state, bounded so a slow/unreachable remote
-        // degrades to "unknown" rather than stalling (mirrors the CLI client).
-        let lock_result = tokio::time::timeout(
-            std::time::Duration::from_secs(6),
-            self.query_locks(),
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok());
-
-        if let Some(locks) = lock_result {
-            let by_path: std::collections::HashMap<&str, &Lock> =
-                locks.iter().map(|l| (l.path.as_str(), l)).collect();
-            for e in &mut status.entries {
-                match by_path.get(e.path.as_str()) {
-                    Some(l) => {
-                        e.lock_state = l.state;
-                        e.lock = Some((*l).clone());
-                    }
-                    None => e.lock_state = LockState::Unlocked,
-                }
-            }
-            status.locks_available = true;
-            status.counts.locked_by_me = status
-                .entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByMe)
-                .count() as u32;
-            status.counts.locked_by_other = status
-                .entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByOther)
-                .count() as u32;
-        }
-        // else: entries stay Unknown, locks_available stays false.
+        // degrades to "unknown" rather than stalling (same merge as the CLI
+        // client — see lore::common).
+        let lock_result =
+            tokio::time::timeout(common::LOCK_MERGE_TIMEOUT, self.query_locks())
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+        common::merge_locks(&mut status, lock_result);
         Ok(status)
     }
 
     async fn query_locks(&self) -> LoreResult<Vec<Lock>> {
         let repo = self.repository.clone();
         tokio::task::spawn_blocking(move || {
-            let identity = ffi_current_identity(&repo).unwrap_or(Identity {
-                user_id: String::new(),
-                name: String::new(),
-                authenticated: false,
-            });
+            let identity =
+                ffi_current_identity(&repo).unwrap_or_else(|_| Identity::unauthenticated());
             ffi_query_locks(&repo, &identity)
         })
         .await

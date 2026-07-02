@@ -105,24 +105,7 @@ impl LoreClient for MockLoreClient {
             entry.lock = Self::lock_for(&entry.path, state);
             entry.staged = staged.contains(&entry.path);
         }
-        status.counts = StatusCounts {
-            staged: status.entries.iter().filter(|e| e.staged).count() as u32,
-            modified: status
-                .entries
-                .iter()
-                .filter(|e| matches!(e.change, FileChange::Modified))
-                .count() as u32,
-            locked_by_me: status
-                .entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByMe)
-                .count() as u32,
-            locked_by_other: status
-                .entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByOther)
-                .count() as u32,
-        };
+        status.counts = StatusCounts::from_entries(&status.entries);
         Ok(status)
     }
 

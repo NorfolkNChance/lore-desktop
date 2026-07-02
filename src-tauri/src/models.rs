@@ -118,6 +118,17 @@ pub struct Identity {
     pub authenticated: bool,
 }
 
+impl Identity {
+    /// The "not logged in" identity every backend falls back to.
+    pub fn unauthenticated() -> Self {
+        Identity {
+            user_id: String::new(),
+            name: String::new(),
+            authenticated: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lock {
@@ -160,6 +171,13 @@ pub enum AssetKind {
     Text,
 }
 
+impl AssetKind {
+    /// Unmergeable content — flips the UI from "diff" to "lock" mode.
+    pub fn is_binary(self) -> bool {
+        !matches!(self, AssetKind::Text)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
@@ -184,6 +202,28 @@ pub struct StatusCounts {
     pub modified: u32,
     pub locked_by_me: u32,
     pub locked_by_other: u32,
+}
+
+impl StatusCounts {
+    /// Derive the header-badge counts from a set of entries — the one place
+    /// this arithmetic lives, so every backend reports identical numbers.
+    pub fn from_entries(entries: &[FileEntry]) -> Self {
+        StatusCounts {
+            staged: entries.iter().filter(|e| e.staged).count() as u32,
+            modified: entries
+                .iter()
+                .filter(|e| matches!(e.change, FileChange::Modified))
+                .count() as u32,
+            locked_by_me: entries
+                .iter()
+                .filter(|e| e.lock_state == LockState::LockedByMe)
+                .count() as u32,
+            locked_by_other: entries
+                .iter()
+                .filter(|e| e.lock_state == LockState::LockedByOther)
+                .count() as u32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

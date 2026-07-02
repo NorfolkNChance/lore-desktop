@@ -10,6 +10,7 @@
 //! the captured output formats the parsers are tested against.
 
 pub mod cli;
+pub mod common;
 #[cfg(feature = "liblore")]
 pub mod ffi;
 pub mod mock;
