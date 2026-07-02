@@ -60,7 +60,7 @@ export function Toolbar() {
       </Segment>
 
       <div className="ml-auto flex items-center gap-3 border-l border-line px-4">
-        {busy && <span className="text-[11px] text-muted">{busy}</span>}
+        {busy && <span className="text-[11px] text-muted">{busy.label}</span>}
         {identity?.authenticated && (
           <span className="text-[11px] text-muted" title={identity.userId}>
             {identity.name}

@@ -16,7 +16,7 @@ export default function App() {
   const {
     status,
     activeTab,
-    loading,
+    busy,
     error,
     lastEvent,
     bootstrap,
@@ -64,7 +64,7 @@ export default function App() {
             />
           </div>
 
-          {loading && !status ? (
+          {busy?.kind === "bootstrap" && !status ? (
             <div className="flex flex-1 items-center justify-center text-muted">
               Loading…
             </div>

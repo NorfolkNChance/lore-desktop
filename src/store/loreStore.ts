@@ -4,6 +4,11 @@
  * Holds the active workspace, working-tree status, history, UI selection, and
  * live service state. `subscribeToEvents` wires the daemon event channel so the
  * UI reacts instantly to lock/status/commit changes pushed from the backend.
+ *
+ * Every mutating action funnels through one `run` helper (busy flag, error
+ * capture, cleanup), so adding an action is a one-liner and there is exactly
+ * one in-flight mechanism: `busy` — `kind` tells components which spinner or
+ * disable-state to drive.
  */
 
 import { create } from "zustand";
@@ -26,6 +31,14 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export type SidebarTab = "changes" | "history";
 
+/** The single in-flight indicator (replaces loading/committing/busy flags). */
+export type Busy = {
+  /** Human-readable, shown in the toolbar. */
+  label: string;
+  /** What kind of work — components key off this for spinners/disables. */
+  kind: "bootstrap" | "commit" | "vcs";
+} | null;
+
 interface LoreState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
@@ -34,14 +47,13 @@ interface LoreState {
   serviceState: ServiceState;
   backendMode: ClientMode;
   loreVersion: string | null;
-  loading: boolean;
+  busy: Busy;
   error: lore.IpcError | null;
   lastEvent: LoreEvent | null;
 
   // UI state
   activeTab: SidebarTab;
   selectedPath: string | null;
-  committing: boolean;
 
   // Phase 4: streaming + diff tools
   transfer: TransferProgress | null;
@@ -51,7 +63,6 @@ interface LoreState {
   // VCS workflow
   branches: Branch[];
   identity: Identity | null;
-  busy: string | null;
 
   // actions
   bootstrap: () => Promise<void>;
@@ -79,285 +90,255 @@ interface LoreState {
   subscribeToEvents: () => Promise<UnlistenFn>;
 }
 
-export const useLoreStore = create<LoreState>((set, get) => ({
-  workspaces: [],
-  activeWorkspaceId: null,
-  status: null,
-  revisions: [],
-  serviceState: "stopped",
-  backendMode: "mock",
-  loreVersion: null,
-  loading: false,
-  error: null,
-  lastEvent: null,
-
-  activeTab: "changes",
-  selectedPath: null,
-  committing: false,
-
-  transfer: null,
-  ingestSummary: null,
-  diffTools: [],
-
-  branches: [],
-  identity: null,
-  busy: null,
-
-  bootstrap: async () => {
-    set({ loading: true, error: null });
+export const useLoreStore = create<LoreState>((set, get) => {
+  /**
+   * Run an async action with the shared busy/error plumbing. Pass `busy` for
+   * actions that should block the toolbar (branch ops, commit, clone…) or
+   * `null` for quiet ones (locks, staging). Returns whether `fn` succeeded.
+   */
+  const run = async (busy: Busy, fn: () => Promise<void>): Promise<boolean> => {
+    set(busy ? { busy, error: null } : { error: null });
     try {
-      const [workspaces, serviceState, backendMode, loreVersion] =
-        await Promise.all([
-          lore.listWorkspaces(),
-          lore.serviceState(),
-          lore.backendMode(),
-          lore.loreVersion().catch(() => null),
-        ]);
-      const activeWorkspaceId = workspaces[0]?.id ?? null;
-      set({ workspaces, activeWorkspaceId, serviceState, backendMode, loreVersion });
-      const status = await lore.getWorkspaceStatus();
-      // Auto-select the first changed file so the detail pane isn't empty.
-      const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;
-      set({ status, selectedPath });
-      await get().refreshHistory();
-      await get().refreshBranches();
-      lore.listDiffTools().then((diffTools) => set({ diffTools })).catch(() => {});
-      lore.currentIdentity().then((identity) => set({ identity })).catch(() => {});
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  refreshStatus: async () => {
-    try {
-      const status = await lore.getWorkspaceStatus();
-      // Keep selection valid; fall back to the first entry.
-      const cur = get().selectedPath;
-      const stillThere = status.entries.some((e) => e.path === cur);
-      set({
-        status,
-        selectedPath: stillThere ? cur : status.entries[0]?.path ?? null,
-      });
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
-
-  refreshHistory: async () => {
-    try {
-      const revisions = await lore.listRevisions(50);
-      set({ revisions });
-    } catch (e) {
-      // History is non-critical; don't surface as a blocking error.
-      console.warn("history load failed", e);
-    }
-  },
-
-  refreshBranches: async () => {
-    try {
-      const branches = await lore.listBranches();
-      set({ branches });
-    } catch (e) {
-      console.warn("branch load failed", e);
-    }
-  },
-
-  switchBranch: async (name) => {
-    set({ busy: `Switching to ${name}…`, error: null });
-    try {
-      await lore.switchBranch(name);
-      await get().refreshStatus();
-      await get().refreshBranches();
-      await get().refreshHistory();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  createBranch: async (name) => {
-    set({ busy: `Creating ${name}…`, error: null });
-    try {
-      await lore.createBranch(name);
-      await get().refreshBranches();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  syncRepo: async () => {
-    set({ busy: "Syncing…", error: null });
-    try {
-      await lore.syncRepository();
-      await get().refreshStatus();
-      await get().refreshHistory();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  pushRepo: async () => {
-    set({ busy: "Pushing…", error: null });
-    try {
-      await lore.pushRepository();
-      await get().refreshHistory();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  openRepository: async () => {
-    try {
-      const dir = await open({
-        directory: true,
-        title: "Open a Lore repository",
-      });
-      if (typeof dir === "string" && dir) {
-        set({ busy: "Opening repository…", selectedPath: null });
-        await lore.setRepository(dir);
-        await get().bootstrap();
-      }
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  cloneRepo: async (url, path) => {
-    set({ busy: "Cloning…", error: null, selectedPath: null });
-    try {
-      await lore.cloneRepository(url, path);
-      await get().bootstrap();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    } finally {
-      set({ busy: null });
-    }
-  },
-
-  setTab: (tab) => set({ activeTab: tab }),
-
-  selectFile: (path) => set({ selectedPath: path }),
-
-  acquireLock: async (path, reason) => {
-    try {
-      await lore.acquireLock(path, reason);
-      await get().refreshStatus();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
-
-  releaseLock: async (path) => {
-    try {
-      await lore.releaseLock(path);
-      await get().refreshStatus();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
-
-  setStaged: async (path, staged) => {
-    try {
-      if (staged) await lore.stageFiles([path]);
-      else await lore.unstageFiles([path]);
-      await get().refreshStatus();
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
-
-  commit: async (message) => {
-    set({ committing: true, error: null });
-    try {
-      await lore.commit(message);
-      await get().refreshStatus();
-      await get().refreshHistory();
+      await fn();
       return true;
     } catch (e) {
       set({ error: lore.toIpcError(e) });
       return false;
     } finally {
-      set({ committing: false });
+      if (busy) set({ busy: null });
     }
-  },
+  };
 
-  startService: async () => {
-    try {
-      await lore.startService();
-      set({ serviceState: await lore.serviceState() });
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
+  /** Refresh status, branches, and history concurrently. */
+  const refreshAll = async () => {
+    await Promise.all([
+      get().refreshStatus(),
+      get().refreshBranches(),
+      get().refreshHistory(),
+    ]);
+  };
 
-  stopService: async () => {
-    try {
-      await lore.stopService();
-      set({ serviceState: await lore.serviceState() });
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
+  return {
+    workspaces: [],
+    activeWorkspaceId: null,
+    status: null,
+    revisions: [],
+    serviceState: "stopped",
+    backendMode: "mock",
+    loreVersion: null,
+    busy: null,
+    error: null,
+    lastEvent: null,
 
-  ingestAsset: async (path) => {
-    set({ ingestSummary: null, transfer: null, error: null });
-    try {
+    activeTab: "changes",
+    selectedPath: null,
+
+    transfer: null,
+    ingestSummary: null,
+    diffTools: [],
+
+    branches: [],
+    identity: null,
+
+    bootstrap: () =>
+      run({ label: "Loading…", kind: "bootstrap" }, async () => {
+        const [workspaces, serviceState, backendMode, loreVersion] =
+          await Promise.all([
+            lore.listWorkspaces(),
+            lore.serviceState(),
+            lore.backendMode(),
+            lore.loreVersion().catch(() => null),
+          ]);
+        const activeWorkspaceId = workspaces[0]?.id ?? null;
+        set({ workspaces, activeWorkspaceId, serviceState, backendMode, loreVersion });
+        const status = await lore.getWorkspaceStatus();
+        // Auto-select the first changed file so the detail pane isn't empty.
+        const selectedPath = get().selectedPath ?? status.entries[0]?.path ?? null;
+        set({ status, selectedPath });
+        await Promise.all([get().refreshHistory(), get().refreshBranches()]);
+        lore.listDiffTools().then((diffTools) => set({ diffTools })).catch(() => {});
+        lore.currentIdentity().then((identity) => set({ identity })).catch(() => {});
+      }).then(() => {}),
+
+    refreshStatus: async () => {
+      try {
+        const status = await lore.getWorkspaceStatus();
+        // Keep selection valid; fall back to the first entry.
+        const cur = get().selectedPath;
+        const stillThere = status.entries.some((e) => e.path === cur);
+        set({
+          status,
+          selectedPath: stillThere ? cur : status.entries[0]?.path ?? null,
+        });
+      } catch (e) {
+        set({ error: lore.toIpcError(e) });
+      }
+    },
+
+    refreshHistory: async () => {
+      try {
+        const revisions = await lore.listRevisions(50);
+        set({ revisions });
+      } catch (e) {
+        // History is non-critical; don't surface as a blocking error.
+        console.warn("history load failed", e);
+      }
+    },
+
+    refreshBranches: async () => {
+      try {
+        const branches = await lore.listBranches();
+        set({ branches });
+      } catch (e) {
+        console.warn("branch load failed", e);
+      }
+    },
+
+    switchBranch: async (name) => {
+      await run({ label: `Switching to ${name}…`, kind: "vcs" }, async () => {
+        await lore.switchBranch(name);
+        await refreshAll();
+      });
+    },
+
+    createBranch: async (name) => {
+      await run({ label: `Creating ${name}…`, kind: "vcs" }, async () => {
+        await lore.createBranch(name);
+        await get().refreshBranches();
+      });
+    },
+
+    syncRepo: async () => {
+      await run({ label: "Syncing…", kind: "vcs" }, async () => {
+        await lore.syncRepository();
+        await Promise.all([get().refreshStatus(), get().refreshHistory()]);
+      });
+    },
+
+    pushRepo: async () => {
+      await run({ label: "Pushing…", kind: "vcs" }, async () => {
+        await lore.pushRepository();
+        await get().refreshHistory();
+      });
+    },
+
+    openRepository: async () => {
+      try {
+        const dir = await open({
+          directory: true,
+          title: "Open a Lore repository",
+        });
+        if (typeof dir === "string" && dir) {
+          set({ selectedPath: null });
+          await run({ label: "Opening repository…", kind: "vcs" }, async () => {
+            await lore.setRepository(dir);
+            await get().bootstrap();
+          });
+        }
+      } catch (e) {
+        // Dialog errors (the IPC ones are handled inside `run`).
+        set({ error: lore.toIpcError(e) });
+      }
+    },
+
+    cloneRepo: async (url, path) => {
+      set({ selectedPath: null });
+      await run({ label: "Cloning…", kind: "vcs" }, async () => {
+        await lore.cloneRepository(url, path);
+        await get().bootstrap();
+      });
+    },
+
+    setTab: (tab) => set({ activeTab: tab }),
+
+    selectFile: (path) => set({ selectedPath: path }),
+
+    acquireLock: async (path, reason) => {
+      await run(null, async () => {
+        await lore.acquireLock(path, reason);
+        await get().refreshStatus();
+      });
+    },
+
+    releaseLock: async (path) => {
+      await run(null, async () => {
+        await lore.releaseLock(path);
+        await get().refreshStatus();
+      });
+    },
+
+    setStaged: async (path, staged) => {
+      await run(null, async () => {
+        if (staged) await lore.stageFiles([path]);
+        else await lore.unstageFiles([path]);
+        await get().refreshStatus();
+      });
+    },
+
+    commit: (message) =>
+      run({ label: "Committing…", kind: "commit" }, async () => {
+        await lore.commit(message);
+        await Promise.all([get().refreshStatus(), get().refreshHistory()]);
+      }),
+
+    startService: async () => {
+      await run(null, async () => {
+        await lore.startService();
+        set({ serviceState: await lore.serviceState() });
+      });
+    },
+
+    stopService: async () => {
+      await run(null, async () => {
+        await lore.stopService();
+        set({ serviceState: await lore.serviceState() });
+      });
+    },
+
+    ingestAsset: async (path) => {
+      set({ ingestSummary: null, transfer: null });
       // Repo-relative path; the backend resolves (and validates) it against
       // the repository root — the boundary check lives on the Rust side.
-      const summary = await lore.streamIngestFile(path);
-      set({ ingestSummary: summary, transfer: null });
-    } catch (e) {
-      set({ error: lore.toIpcError(e), transfer: null });
-    }
-  },
+      await run(null, async () => {
+        const summary = await lore.streamIngestFile(path);
+        set({ ingestSummary: summary });
+      });
+      set({ transfer: null });
+    },
 
-  openAssetDiff: async (path, toolId) => {
-    try {
-      await lore.launchAssetDiff(path, toolId);
-    } catch (e) {
-      set({ error: lore.toIpcError(e) });
-    }
-  },
+    openAssetDiff: async (path, toolId) => {
+      await run(null, () => lore.launchAssetDiff(path, toolId).then(() => {}));
+    },
 
-  dismissError: () => set({ error: null }),
+    dismissError: () => set({ error: null }),
 
-  clearIngest: () => set({ ingestSummary: null, transfer: null }),
+    clearIngest: () => set({ ingestSummary: null, transfer: null }),
 
-  subscribeToEvents: () =>
-    lore.onLoreEvent((event) => {
-      set({ lastEvent: event });
-      switch (event.tag) {
-        case "lockChanged":
-        case "statusChanged":
-          void get().refreshStatus();
-          break;
-        case "revisionCommitted":
-          void get().refreshStatus();
-          void get().refreshHistory();
-          break;
-        case "branchSwitched":
-          void get().refreshBranches();
-          void get().refreshStatus();
-          break;
-        case "serviceStateChanged":
-          set({ serviceState: event.payload.state });
-          break;
-        case "transferProgress":
-          set({ transfer: event.payload });
-          break;
-        default:
-          break;
-      }
-    }),
-}));
+    subscribeToEvents: () =>
+      lore.onLoreEvent((event) => {
+        set({ lastEvent: event });
+        switch (event.tag) {
+          case "lockChanged":
+          case "statusChanged":
+            void get().refreshStatus();
+            break;
+          case "revisionCommitted":
+            void get().refreshStatus();
+            void get().refreshHistory();
+            break;
+          case "branchSwitched":
+            void get().refreshBranches();
+            void get().refreshStatus();
+            break;
+          case "serviceStateChanged":
+            set({ serviceState: event.payload.state });
+            break;
+          case "transferProgress":
+            set({ transfer: event.payload });
+            break;
+          default:
+            break;
+        }
+      }),
+  };
+});
