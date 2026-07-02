@@ -201,21 +201,7 @@ pub fn file_entries() -> Vec<FileEntry> {
 
 pub fn workspace_status() -> WorkspaceStatus {
     let entries = file_entries();
-    let counts = StatusCounts {
-        staged: entries.iter().filter(|e| e.staged).count() as u32,
-        modified: entries
-            .iter()
-            .filter(|e| matches!(e.change, FileChange::Modified))
-            .count() as u32,
-        locked_by_me: entries
-            .iter()
-            .filter(|e| e.lock_state == LockState::LockedByMe)
-            .count() as u32,
-        locked_by_other: entries
-            .iter()
-            .filter(|e| e.lock_state == LockState::LockedByOther)
-            .count() as u32,
-    };
+    let counts = StatusCounts::from_entries(&entries);
 
     WorkspaceStatus {
         workspace_id: workspace().id,

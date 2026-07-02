@@ -7,6 +7,7 @@
 //!   * `--non-interactive` prevents auth prompts from hanging a spawned child.
 //!   * There is no JSON output; success/failure is `[Error] …` + exit code.
 
+use super::common;
 use super::parse::{self, FileMarker};
 use super::{ClientMode, LoreClient, LoreError, LoreResult};
 use crate::models::*;
@@ -43,11 +44,7 @@ impl CliLoreClient {
             .get_or_init(|| async {
                 match self.run(&["auth", "info"]).await {
                     Ok(out) if !out.trim().is_empty() => parse_identity(&out),
-                    _ => Identity {
-                        user_id: String::new(),
-                        name: String::new(),
-                        authenticated: false,
-                    },
+                    _ => Identity::unauthenticated(),
                 }
             })
             .await
@@ -149,37 +146,12 @@ impl LoreClient for CliLoreClient {
             parsed.files.retain(|(_, p)| seen.insert(p.clone()));
         }
 
-        // Lock state is server-authoritative (no offline form). Bound it tightly
-        // so a slow/unreachable remote degrades to "unknown lock" rather than
-        // stalling. Distinguish a successful (possibly empty) result from a
-        // failure/timeout: on failure, locks are *unknown*, not *unlocked*.
-        let lock_result = tokio::time::timeout(
-            std::time::Duration::from_secs(6),
-            self.query_locks(),
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok());
-        let locks_available = lock_result.is_some();
-        let locks = lock_result.unwrap_or_default();
-        let lock_by_path: std::collections::HashMap<&str, &Lock> =
-            locks.iter().map(|l| (l.path.as_str(), l)).collect();
-
+        // Build entries lock-agnostic (Unknown); the shared merge fills them in.
         let entries: Vec<FileEntry> = parsed
             .files
             .iter()
             .map(|(marker, path)| {
-                let found = lock_by_path.get(path.as_str());
-                let lock_state = if !locks_available {
-                    LockState::Unknown
-                } else {
-                    match found {
-                        Some(l) => l.state,
-                        None => LockState::Unlocked,
-                    }
-                };
-                let lock = found.map(|l| (*l).clone());
-                let kind = asset_kind_for(path);
+                let kind = common::asset_kind_for(path);
                 FileEntry {
                     path: path.clone(),
                     file_id: String::new(),
@@ -190,14 +162,14 @@ impl LoreClient for CliLoreClient {
                     },
                     staged: false,
                     dirty: true,
-                    is_binary: !matches!(kind, AssetKind::Text),
+                    is_binary: kind.is_binary(),
                     asset_kind: kind,
                     size_bytes: file_size(&self.repository, path),
                     // Fragment count isn't exposed by the CLI; 0 = unknown until
                     // the FFI client can read the store index.
                     fragment_count: 0,
-                    lock_state,
-                    lock,
+                    lock_state: LockState::Unknown,
+                    lock: None,
                 }
             })
             .collect();
@@ -217,57 +189,34 @@ impl LoreClient for CliLoreClient {
             tree_root: FragmentAddress { hash: String::new(), context: String::new() },
             is_merge: false,
         };
-        let counts = StatusCounts {
-            staged: entries.iter().filter(|e| e.staged).count() as u32,
-            modified: entries
-                .iter()
-                .filter(|e| matches!(e.change, FileChange::Modified))
-                .count() as u32,
-            locked_by_me: entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByMe)
-                .count() as u32,
-            locked_by_other: entries
-                .iter()
-                .filter(|e| e.lock_state == LockState::LockedByOther)
-                .count() as u32,
-        };
-
-        Ok(WorkspaceStatus {
+        let mut status = WorkspaceStatus {
             workspace_id: parsed.repository_id.unwrap_or_default(),
             branch,
             head_revision,
+            counts: StatusCounts::from_entries(&entries),
             entries,
-            counts,
-            locks_available,
-        })
+            locks_available: false,
+        };
+
+        // Lock state is server-authoritative (no offline form). Bound it so a
+        // slow/unreachable remote degrades to "unknown lock" rather than
+        // stalling; on failure/timeout locks are *unknown*, not *unlocked*.
+        let lock_result =
+            tokio::time::timeout(common::LOCK_MERGE_TIMEOUT, self.query_locks())
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+        common::merge_locks(&mut status, lock_result);
+        Ok(status)
     }
 
     async fn query_locks(&self) -> LoreResult<Vec<Lock>> {
         let out = self.run(&["lock", "query"]).await?;
         let identity = self.identity().await;
-        let locks = parse::parse_lock_query(&out)
+        Ok(parse::parse_lock_query(&out)
             .into_iter()
-            .map(|p| {
-                // Attribute me vs. other by comparing the lock owner to the
-                // authenticated identity. Without login we can't tell, so fall
-                // back to "locked by me" (single-user assumption).
-                let state = if identity.authenticated && !owner_is_me(&p.owner, &identity) {
-                    LockState::LockedByOther
-                } else {
-                    LockState::LockedByMe
-                };
-                Lock {
-                    path: p.path,
-                    state,
-                    owner: Some(Author { name: p.owner, email: String::new() }),
-                    instance_id: None,
-                    acquired_at: None,
-                    reason: None,
-                }
-            })
-            .collect();
-        Ok(locks)
+            .map(|p| common::lock_entry(p.path, p.owner, &identity))
+            .collect())
     }
 
     async fn lock_status(&self, path: &str) -> LoreResult<LockState> {
@@ -395,14 +344,6 @@ impl LoreClient for CliLoreClient {
     }
 }
 
-/// True if a lock owner string refers to the authenticated identity.
-fn owner_is_me(owner: &str, identity: &Identity) -> bool {
-    let o = owner.trim();
-    o == "<unknown>"
-        || (!identity.user_id.is_empty() && o.contains(&identity.user_id))
-        || (!identity.name.is_empty() && o.contains(&identity.name))
-}
-
 /// Parse `lore auth info` into an `Identity`. The exact layout depends on the
 /// auth backend; we extract a user id and a display name best-effort and treat
 /// any non-empty output as authenticated.
@@ -439,26 +380,6 @@ fn rfc2822_to_iso(date: &str) -> String {
 /// Best-effort file size from the working tree.
 fn file_size(repo: &Path, rel: &str) -> u64 {
     std::fs::metadata(repo.join(rel)).map(|m| m.len()).unwrap_or(0)
-}
-
-/// Classify an asset by extension for the binary-first UI.
-fn asset_kind_for(path: &str) -> AssetKind {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "umap" => AssetKind::Umap,
-        "uasset" => AssetKind::Uasset,
-        "png" | "tga" | "jpg" | "jpeg" | "exr" | "dds" => AssetKind::Texture,
-        "wav" | "ogg" | "mp3" => AssetKind::Audio,
-        "txt" | "ini" | "json" | "xml" | "cpp" | "h" | "rs" | "ts" | "md" | "toml" => {
-            AssetKind::Text
-        }
-        "" => AssetKind::Binary,
-        _ => AssetKind::Binary,
-    }
 }
 
 fn now_iso8601() -> String {
